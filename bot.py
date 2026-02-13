@@ -1,5 +1,16 @@
-import logging
+import sys
 import os
+
+# <-- Вставьте этот блок самым первым
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+import urllib3
+print("Используется urllib3 из:", urllib3.__file__)
+
+from urllib3.contrib import appengine
+# --- Конец диагностического блока ---
+
+import logging
 import random
 import threading
 import time
