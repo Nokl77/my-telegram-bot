@@ -4,3 +4,4 @@ beautifulsoup4==4.12.2
 urllib3<2
 python-dotenv==1.0.1
 setuptools>=45
+pkg_resources
