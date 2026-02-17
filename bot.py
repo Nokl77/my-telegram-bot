@@ -7,7 +7,7 @@ from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
-from typing import List, Dict, Set
+from typing import List, Dict, Mapping, Sequence, Set
 
 # --- ПЕРЕМЕННЫЕ И НАСТРОЙКИ ---
 load_dotenv()
@@ -124,7 +124,6 @@ def get_image_prompt(news: Dict) -> str:
     )
     user_prompt = f"News:\n{news['title']}\n{news['full_text'][:600]}\n"
     messages = [{"role": "system", "content": sys_prompt}, {"role": "user", "content": user_prompt}]
-
     first_prompt = ask_gpt(messages).strip() or "Prompt could not be generated."
     final_prompt = (
         "The character from image.png (a pixel art character...) "
@@ -167,5 +166,45 @@ async def send_news_periodically(application: ApplicationBuilder, last_news_ids:
                 if img_url:
                     await application.bot.send_photo(chat_id=chat_id, photo=img_url, caption="🖼️ Сгенерировано ИИ (DALL-E 3)")
                 else:
-                    await application.bot.send_message(chat_id=chat_id, text="Ошибка генерации изображения
+                    await application.bot.send_message(chat_id=chat_id, text="Ошибка генерации изображения.")
+                await asyncio.sleep(2)
+                for msg in split_digest_by_news(digest):
+                    parts = [msg[i:i+MAX_TEXT_LEN] for i in range(0,len(msg),MAX_TEXT_LEN)]
+                    for part in parts:
+                        await application.bot.send_message(chat_id=chat_id, text=part)
+                        await asyncio.sleep(2)
+            except Exception as e:
+                logging.error(f"Ошибка отправки в {chat_id}: {e}")
 
+        last_news_ids.update(n['id'] for n in new_news)
+        await asyncio.sleep(CHECK_INTERVAL)
+
+# --- КОМАНДЫ ---
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    chat_ids.add(chat_id)
+    logging.info(f"Subscribed: {chat_ids}")
+    await update.message.reply_text(f"Hello! Your chat ID is {chat_id}.\nДоброго времени суток.")
+
+async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    chat_ids.discard(chat_id)
+    logging.info(f"Unsubscribed: {chat_ids}")
+    await update.message.reply_text("Вы больше не получаете новости." if chat_id not in chat_ids else "Goodbye!")
+
+async def echo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Я понимаю только команды /start и /stop.")
+
+# --- MAIN ---
+async def main():
+    if not BOT_TOKEN:
+        raise RuntimeError("TELEGRAM_BOT_TOKEN не задан в .env")
+    application = ApplicationBuilder().token(BOT_TOKEN).build()
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("stop", stop))
+    application.add_handler(MessageHandler(filters.ALL, echo))
+    asyncio.create_task(send_news_periodically(application, last_news_ids, chat_ids))
+    await application.run_polling()
+
+if __name__ == "__main__":
+    asyncio.run(main())
