@@ -1,4 +1,3 @@
-
 import logging
 import os
 import random
@@ -169,3 +168,4 @@ async def send_news_periodically(application: ApplicationBuilder, last_news_ids:
                     await application.bot.send_photo(chat_id=chat_id, photo=img_url, caption="🖼️ Сгенерировано ИИ (DALL-E 3)")
                 else:
                     await application.bot.send_message(chat_id=chat_id, text="Ошибка генерации изображения
+
