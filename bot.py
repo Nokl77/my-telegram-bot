@@ -1,23 +1,14 @@
-import sys
-import os
-
-# <-- Вставьте этот блок самым первым
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
-import urllib3
-print("Используется urllib3 из:", urllib3.__file__)
-
-from urllib3.contrib import appengine
-# --- Конец диагностического блока ---
-
 import logging
+import os
 import random
 import threading
 import time
-from typing import List, Set, Dict
+my_set: set[int]
+my_list: list[str]
+my_dict: dict[str, int]
+
 import requests
 from bs4 import BeautifulSoup
-
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -25,7 +16,6 @@ from telegram.ext import (
     CommandHandler,
     MessageHandler,
     ContextTypes,
-    CallbackContext,
     filters
 )
 
@@ -36,13 +26,14 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 OPENAI_ORG = os.getenv("OPENAI_ORG")
 
 logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO
 )
 
-CHECK_INTERVAL = 60 * 240  # 4 часа
+CHECK_INTERVAL = 60 * 2
 
-chat_ids: Set[int] = set()
-last_news_ids: Set[str] = set()
+chat_ids: set[int]
+last_news_ids: set[str]
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
@@ -105,24 +96,29 @@ def get_full_article_text(url: str, site: str) -> str:
         resp = requests.get(url, headers=HEADERS, timeout=20)
         text = resp.text
         soup = BeautifulSoup(text, "html.parser")
+
         if site == 'destructoid':
             main = soup.find("div", class_="article-content")
             if main:
                 return main.get_text(separator="\n", strip=True)
+
         elif site == 'pcgamer':
             main = soup.find("div", class_="article-body")
             if main:
                 return main.get_text(separator="\n", strip=True)
+
         elif site == 'rockpapershotgun':
             main = soup.find("div", class_="article-body")
             if main:
                 return main.get_text(separator="\n", strip=True)
+
         elif site == 'nvidia':
             main = soup.find("div", class_="td-post-content")
             if not main:
                 main = soup.find("div", class_="tdb-block-inner td-fix-index")
             if main:
                 return main.get_text(separator="\n", strip=True)
+
         return ""
     except Exception as e:
         print(f"[DEBUG:{site}] Ошибка парсинга полного текста: {e}")
@@ -137,17 +133,21 @@ def fetch_destructoid_news() -> List[Dict]:
         soup = BeautifulSoup(resp.text, "html.parser")
         articles = soup.find_all("article")
         print(f"[DEBUG:destructoid] Найдено {len(articles)} <article>")
+
         for art in articles[:7]:
             a = art.find("a", href=True)
             title = art.find("h2") or art.find("h3")
             if not a or not title:
                 continue
+
             href = a['href']
             if not href.startswith("http"):
                 href = "https://www.destructoid.com" + href
+
             full_text = get_full_article_text(href, 'destructoid')
             if not full_text:
                 full_text = title.get_text(strip=True)
+
             news.append({
                 'id': href,
                 'title': title.get_text(strip=True),
@@ -168,17 +168,21 @@ def fetch_pcgamer_news() -> List[Dict]:
         soup = BeautifulSoup(resp.text, "html.parser")
         articles = soup.find_all("div", class_="listingResult")
         print(f"[DEBUG:pcgamer] Найдено {len(articles)} новостных блоков")
+
         for art in articles[:7]:
             a = art.find("a", href=True)
             title = art.find("h3") or art.find("h4")
             if not a or not title:
                 continue
+
             href = a['href']
             if not href.startswith("http"):
                 href = "https://www.pcgamer.com" + href
+
             full_text = get_full_article_text(href, 'pcgamer')
             if not full_text:
                 full_text = title.get_text(strip=True)
+
             news.append({
                 'id': href,
                 'title': title.get_text(strip=True),
@@ -199,17 +203,21 @@ def fetch_rockpapershotgun_news() -> List[Dict]:
         soup = BeautifulSoup(resp.text, "html.parser")
         articles = soup.find_all("article")
         print(f"[DEBUG:rps] Найдено {len(articles)} <article>")
+
         for art in articles[:7]:
             a = art.find("a", href=True)
             title = art.find("h2") or art.find("h3")
             if not a or not title:
                 continue
+
             href = a['href']
             if not href.startswith("http"):
                 href = "https://www.rockpapershotgun.com" + href
+
             full_text = get_full_article_text(href, 'rockpapershotgun')
             if not full_text:
                 full_text = title.get_text(strip=True)
+
             news.append({
                 'id': href,
                 'title': title.get_text(strip=True),
@@ -230,17 +238,21 @@ def fetch_nvidia_news() -> List[Dict]:
         soup = BeautifulSoup(resp.text, "html.parser")
         articles = soup.find_all("article")
         print(f"[DEBUG:nvidia] Найдено {len(articles)} <article>")
+
         for art in articles[:7]:
             a = art.find("a", href=True)
             title = art.find("h2") or art.find("h3")
             if not a or not title:
                 continue
+
             href = a['href']
             if not href.startswith("http"):
                 href = "https://blogs.nvidia.com" + href
+
             full_text = get_full_article_text(href, 'nvidia')
             if not full_text:
                 full_text = title.get_text(strip=True)
+
             news.append({
                 'id': href,
                 'title': title.get_text(strip=True),
@@ -260,6 +272,7 @@ def fetch_all_selected_news() -> Dict[str, List[Dict]]:
         ('rockpapershotgun', fetch_rockpapershotgun_news),
         ('nvidia', fetch_nvidia_news),
     ]
+
     for name, fetcher in fetchers:
         try:
             news = fetcher()
@@ -275,7 +288,7 @@ def split_digest_by_news(digest: str, max_news_per_msg: int = 4) -> List[str]:
     news_blocks = [block.strip() for block in digest.split('\n\n') if block.strip()]
     messages = []
     for i in range(0, len(news_blocks), max_news_per_msg):
-        chunk = '\n\n'.join(news_blocks[i:i+max_news_per_msg])
+        chunk = '\n\n'.join(news_blocks[i:i + max_news_per_msg])
         messages.append(chunk)
     return messages
 
@@ -296,6 +309,7 @@ def get_image_prompt(news: Dict) -> str:
     first_prompt = ask_gpt(messages)
     if not first_prompt:
         return "Prompt could not be generated."
+
     first_prompt = first_prompt.strip()
     final_prompt = (
         "The character from image.png (a pixel art character with short brown hair, black square glasses, "
@@ -305,17 +319,22 @@ def get_image_prompt(news: Dict) -> str:
     )
     return final_prompt.strip()
 
-def send_news_periodically(application):
-    global last_news_ids
+async def send_news_periodically(
+    application: Application,
+    last_news_ids: set[str],
+    chat_ids: set[int],
+) -> None:
     while True:
-        all_news = fetch_all_selected_news()
-        new_news = []
+        all_news: Mapping[str, Sequence[dict]] = fetch_all_selected_news()
+        new_news: list[dict] = []
+
         for news_list in all_news.values():
             for news in news_list:
-                if news['id'] not in last_news_ids:
+                if news["id"] not in last_news_ids:
                     new_news.append(news)
+
         if not new_news or not chat_ids:
-            time.sleep(CHECK_INTERVAL)
+            await asyncio.sleep(CHECK_INTERVAL)
             continue
 
         digest_input = ""
@@ -326,6 +345,7 @@ def send_news_periodically(application):
                 short_content = content if len(content) < 550 else content[:550].rsplit(' ', 1)[0] + "…"
                 digest_input += short_content
             digest_input += "\n\n"
+
         digest_input = digest_input.strip()
         if len(digest_input) > 2800:
             digest_input = "\n\n".join(news['title'] for news in new_news)
@@ -356,7 +376,11 @@ def send_news_periodically(application):
         for chat_id in chat_ids.copy():
             try:
                 if img_url:
-                    application.bot.send_photo(chat_id=chat_id, photo=img_url, caption="🖼️ Сгенерировано ИИ (DALL-E 3), персонаж из image.png")
+                    application.bot.send_photo(
+                        chat_id=chat_id,
+                        photo=img_url,
+                        caption="🖼️ Сгенерировано ИИ (DALL-E 3), персонаж из image.png"
+                    )
                 else:
                     application.bot.send_message(chat_id=chat_id, text="Ошибка генерации изображения.")
                 time.sleep(2)
@@ -364,45 +388,82 @@ def send_news_periodically(application):
                 logging.error(f"Ошибка отправки изображения в {chat_id}: {e}")
 
             split_msgs = split_digest_by_news(digest, max_news_per_msg=4)
-            for idx, msg in enumerate(split_msgs):
+            for msg in split_msgs:
                 try:
                     if len(msg) > MAX_TEXT_LEN:
-                        parts = [msg[i:i+MAX_TEXT_LEN] for i in range(0, len(msg), MAX_TEXT_LEN)]
+                        parts = [msg[i:i + MAX_TEXT_LEN] for i in range(0, len(msg), MAX_TEXT_LEN)]
                     else:
                         parts = [msg]
+
                     for part in parts:
                         application.bot.send_message(chat_id=chat_id, text=part)
                         time.sleep(2)
+
                 except Exception as e:
                     logging.error(f"Ошибка отправки дайджеста в {chat_id}: {e}")
 
         last_news_ids.update(news['id'] for news in new_news)
         time.sleep(CHECK_INTERVAL)
 
+# --- COMMANDS (интеграция "второй части" корректно под v20) ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
+
+    # аналог print(f"Chat ID: {chat_id}")
+    logging.info("Chat ID: %s", chat_id)
+
+    # добавляем чат
     chat_ids.add(chat_id)
-    await update.message.reply_text("Доброго времени суток. Теперь я буду публиковать новости раз в 4 часа.")
+
+    # аналог print(f"Current chat_ids: {chat_ids}")
+    logging.info(f"Current chat_ids: {chat_ids}")
+
+    await update.message.reply_text(
+        f"Hello! Your chat ID is {chat_id}.\n"
+        "Доброго времени суток. Теперь я буду публиковать новости раз в 4 часа."
+    )
 
 async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
+
+    # аналог print(f"Removing Chat ID: {chat_id}")
+    logging.info(f"Removing Chat ID: {chat_id}")
+
     if chat_id in chat_ids:
         chat_ids.remove(chat_id)
-        await update.message.reply_text("❌ Бот больше не будет публиковать новости в этом чате.")
+        logging.info(f"Current chat_ids: {chat_ids}")
+        await update.message.reply_text(f"Goodbye! Your chat ID {chat_id} has been removed.\n❌ Бот больше не будет публиковать новости в этом чате.")
     else:
+        logging.info(f"Current chat_ids: {chat_ids}")
         await update.message.reply_text("Вы не подписаны на новости.")
 
 async def echo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Я понимаю только команды /start и /stop.")
 
 def main():
-    application = ApplicationBuilder().token(BOT_TOKEN).build()
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("stop", stop))
-    application.add_handler(MessageHandler(filters.ALL, echo))
+    if not BOT_TOKEN:
+        raise RuntimeError("TELEGRAM_BOT_TOKEN не задан в окружении (.env).")
+
+    import asyncio
+    from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters
+
+    async def main():
+        application = ApplicationBuilder().token(BOT_TOKEN).build()
+
+        # Добавление обработчиков
+        application.add_handler(CommandHandler("start", start))
+        application.add_handler(CommandHandler("stop", stop))
+        application.add_handler(MessageHandler(filters.ALL, echo))
+
+    if __name__ == "__main__":
+        asyncio.run(main())
 
     # Запуск новостной функции в отдельном потоке (чтобы не мешать poll'ингу бота)
-    threading.Thread(target=send_news_periodically, args=(application,), daemon=True).start()
+    threading.Thread(
+        target=send_news_periodically,
+        args=(application,),
+        daemon=True
+    ).start()
 
     print("Бот запущен!")
     application.run_polling()
