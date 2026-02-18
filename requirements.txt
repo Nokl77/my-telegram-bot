@@ -1,5 +1,4 @@
-python-dotenv
-requests>=2.26.0
-beautifulsoup4>=4.10.0
-python-telegram-bot>=20.0
-openai>=0.27.0
+python-telegram-bot==21.8
+aiohttp==3.10.11
+beautifulsoup4==4.12.3
+python-dotenv==1.0.1
