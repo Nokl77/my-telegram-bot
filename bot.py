@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import base64
 from dataclasses import dataclass
 from typing import Callable, Set, List, Tuple
 
@@ -111,10 +112,6 @@ SOURCES = [
     NewsSource("NVIDIA Blog", "https://blogs.nvidia.com/", parse_nvidia_blog),
 ]
 
-# =========================
-# Память
-# =========================
-
 sent_links: Set[str] = set()
 
 # =========================
@@ -122,20 +119,17 @@ sent_links: Set[str] = set()
 # =========================
 
 async def fetch_html(session: aiohttp.ClientSession, url: str) -> str:
-    headers = {"User-Agent": "Mozilla/5.0 (compatible; NewsDigestBot/1.0)"}
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; NewsDigestBot/2.0)"}
     timeout = aiohttp.ClientTimeout(total=30)
     async with session.get(url, headers=headers, timeout=timeout) as response:
         response.raise_for_status()
         return await response.text()
 
 # =========================
-# ChatGPT генерация дайджеста
+# Генерация дайджеста
 # =========================
 
 async def generate_digest(news_items: List[Tuple[str, str, str]]) -> str:
-    """
-    news_items: (source_name, title, link)
-    """
 
     formatted_news = "\n".join(
         f"- [{source}] {title} ({link})"
@@ -145,8 +139,7 @@ async def generate_digest(news_items: List[Tuple[str, str, str]]) -> str:
     prompt = f"""
 Ты — редактор игрового новостного канала.
 
-Сделай единый краткий, структурированный дайджест новостей.
-Пиши живо, но профессионально.
+Сделай единый краткий структурированный дайджест.
 Не выдумывай факты.
 Сохрани ссылки.
 
@@ -160,10 +153,56 @@ async def generate_digest(news_items: List[Tuple[str, str, str]]) -> str:
             {"role": "system", "content": "Ты профессиональный игровой редактор."},
             {"role": "user", "content": prompt},
         ],
+        temperature=0.6,
+    )
+
+    return response.choices[0].message.content.strip()
+
+# =========================
+# Генерация image prompt (этап 1)
+# =========================
+
+async def generate_image_prompt(digest_text: str) -> str:
+
+    base_prompt = (
+        "You are creating prompts for image generation AIs in English. "
+        "Base your prompt on the news article below. Come up with a short scene description or illustration idea (1-2 sentences), "
+        "do not use names of real game characters: only general descriptions (for example, 'a young knight in green costume'). "
+        "Keep only English names of games and companies. Do not include names, brands, logos, interfaces or text elements.\n\n"
+        f"{digest_text}"
+    )
+
+    response = await openai_client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[{"role": "user", "content": base_prompt}],
         temperature=0.7,
     )
 
     return response.choices[0].message.content.strip()
+
+# =========================
+# Генерация изображения (этап 2)
+# =========================
+
+async def generate_image(first_prompt: str) -> bytes:
+
+    final_prompt = (
+        "The character from image.png (a pixel art character with short brown hair, black square glasses, "
+        "a white T-shirt with a black spiral symbol, red and orange checkered suspenders, "
+        "blue jeans with a brown belt, and brown shoes) "
+        f"is present in the scene. {first_prompt} "
+        "The character is visibly interacting with the main elements of the scene or other characters; "
+        "make their interaction clear and meaningful (for example, talking, working together, or sharing an activity)."
+    )
+
+    result = await openai_client.images.generate(
+        model="gpt-image-1",
+        prompt=final_prompt,
+        size="1024x1024",
+    )
+
+    image_base64 = result.data[0].b64_json
+    return base64.b64decode(image_base64)
 
 # =========================
 # Проверка новостей
@@ -184,7 +223,6 @@ async def check_news(application: Application) -> None:
                 for title, link in articles:
                     if link in sent_links:
                         continue
-
                     collected.append((source.name, title, link))
 
             except Exception as e:
@@ -197,7 +235,16 @@ async def check_news(application: Application) -> None:
 
     try:
         digest_text = await generate_digest(selected)
+        first_prompt = await generate_image_prompt(digest_text)
+        image_bytes = await generate_image(first_prompt)
 
+        # отправляем картинку
+        await application.bot.send_photo(
+            chat_id=TARGET_CHAT_ID,
+            photo=image_bytes,
+        )
+
+        # отправляем текст
         await application.bot.send_message(
             chat_id=TARGET_CHAT_ID,
             text=digest_text,
@@ -208,7 +255,7 @@ async def check_news(application: Application) -> None:
             sent_links.add(link)
 
     except Exception as e:
-        logger.error(f"Digest generation error: {e}")
+        logger.error(f"Generation error: {e}")
 
 # =========================
 # Фоновый цикл
