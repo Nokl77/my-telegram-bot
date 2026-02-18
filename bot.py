@@ -2,17 +2,12 @@ import asyncio
 import logging
 import os
 from dataclasses import dataclass
-from typing import Callable, Awaitable, Set
+from typing import Callable, Set
 
 import aiohttp
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
-from telegram import Bot
-from telegram.ext import (
-    Application,
-    ApplicationBuilder,
-    ContextTypes,
-)
+from telegram.ext import Application, ApplicationBuilder
 
 # =========================
 # Настройка логирования
@@ -98,44 +93,25 @@ def parse_nvidia_blog(soup: BeautifulSoup) -> list[tuple[str, str]]:
 # =========================
 
 SOURCES: list[NewsSource] = [
-    NewsSource(
-        name="Destructoid",
-        url="https://www.destructoid.com/news/",
-        parser=parse_destructoid,
-    ),
-    NewsSource(
-        name="PC Gamer",
-        url="https://www.pcgamer.com/news/",
-        parser=parse_pcgamer,
-    ),
-    NewsSource(
-        name="Rock Paper Shotgun",
-        url="https://www.rockpapershotgun.com/news/",
-        parser=parse_rps,
-    ),
-    NewsSource(
-        name="NVIDIA Blog",
-        url="https://blogs.nvidia.com/",
-        parser=parse_nvidia_blog,
-    ),
+    NewsSource("Destructoid", "https://www.destructoid.com/news/", parse_destructoid),
+    NewsSource("PC Gamer", "https://www.pcgamer.com/news/", parse_pcgamer),
+    NewsSource("Rock Paper Shotgun", "https://www.rockpapershotgun.com/news/", parse_rps),
+    NewsSource("NVIDIA Blog", "https://blogs.nvidia.com/", parse_nvidia_blog),
 ]
 
 # =========================
-# Глобальное хранилище
+# Хранилище отправленных ссылок
 # =========================
 
 sent_links: Set[str] = set()
-
 
 # =========================
 # Загрузка страницы
 # =========================
 
 async def fetch_html(session: aiohttp.ClientSession, url: str) -> str:
-    headers = {
-        "User-Agent": "Mozilla/5.0 (compatible; NewsBot/1.0)"
-    }
-    async with session.get(url, headers=headers, timeout=30) as response:
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; NewsBot/1.0)"}
+    async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=30)) as response:
         response.raise_for_status()
         return await response.text()
 
@@ -161,24 +137,37 @@ async def check_news(application: Application) -> None:
                             f"{title}\n"
                             f"{link}"
                         )
+
                         await application.bot.send_message(
                             chat_id=TARGET_CHAT_ID,
                             text=message,
                             parse_mode="HTML",
                             disable_web_page_preview=False,
                         )
+
                         sent_links.add(link)
+
+                        # анти-спам пауза
+                        await asyncio.sleep(1)
 
             except Exception as e:
                 logger.error(f"Ошибка при обработке {source.name}: {e}")
 
 
 # =========================
-# Job wrapper
+# Фоновый цикл
 # =========================
 
-async def job_callback(context: ContextTypes.DEFAULT_TYPE) -> None:
-    await check_news(context.application)
+async def news_loop(application: Application) -> None:
+    await application.wait_until_ready()
+
+    while True:
+        try:
+            await check_news(application)
+        except Exception as e:
+            logger.error(f"Ошибка в основном цикле: {e}")
+
+        await asyncio.sleep(CHECK_INTERVAL_SECONDS)
 
 
 # =========================
@@ -189,21 +178,18 @@ async def main() -> None:
     if not BOT_TOKEN or not TARGET_CHAT_ID:
         raise RuntimeError("BOT_TOKEN или TARGET_CHAT_ID не заданы")
 
-    application = (
-        ApplicationBuilder()
-        .token(BOT_TOKEN)
-        .build()
-    )
+    application = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    application.job_queue.run_repeating(
-        job_callback,
-        interval=CHECK_INTERVAL_SECONDS,
-        first=5,
-    )
+    # создаём фоновую задачу после запуска
+    async def on_startup(app: Application) -> None:
+        asyncio.create_task(news_loop(app))
+
+    application.post_init = on_startup
 
     logger.info("Бот запущен.")
     await application.run_polling()
 
 
 if __name__ == "__main__":
+    import asyncio
     asyncio.run(main())
