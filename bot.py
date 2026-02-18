@@ -196,15 +196,21 @@ async def echo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Я понимаю только команды /start и /stop.")
 
 # --- MAIN ---
-async def main():
+def main():
     if not BOT_TOKEN:
         raise RuntimeError("TELEGRAM_BOT_TOKEN не задан в .env")
+
     application = ApplicationBuilder().token(BOT_TOKEN).build()
+
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("stop", stop))
     application.add_handler(MessageHandler(filters.ALL, echo))
-    asyncio.create_task(send_news_periodically(application, last_news_ids, chat_ids))
-    await application.run_polling()
+
+    application.create_task(
+        send_news_periodically(application, last_news_ids, chat_ids)
+    )
+
+    application.run_polling()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
