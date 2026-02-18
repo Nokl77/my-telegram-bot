@@ -212,6 +212,6 @@ async def main():
     # Запускаем polling
     await application.run_polling()
 
-# Убираем asyncio.run(main()), просто вызываем main()
 if __name__ == "__main__":
-    main()
+   asyncio.run(main())
+
