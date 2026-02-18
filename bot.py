@@ -30,6 +30,10 @@ BOT_TOKEN: str = os.getenv("BOT_TOKEN", "")
 TARGET_CHAT_ID: str = os.getenv("TARGET_CHAT_ID", "")
 CHECK_INTERVAL_SECONDS: int = 120
 
+TOTAL_PER_CYCLE = 5
+NVIDIA_QUOTA = max(1, TOTAL_PER_CYCLE // 5)  # 20%
+OTHER_QUOTA = TOTAL_PER_CYCLE - NVIDIA_QUOTA
+
 # =========================
 # Модель источника
 # =========================
@@ -39,13 +43,14 @@ class NewsSource:
     name: str
     url: str
     parser: Callable[[BeautifulSoup], list[tuple[str, str]]]
+    is_nvidia: bool = False
 
 # =========================
 # Парсеры
 # =========================
 
 def parse_destructoid(soup: BeautifulSoup) -> list[tuple[str, str]]:
-    result: list[tuple[str, str]] = []
+    result = []
     for a in soup.select("a.title"):
         title = a.get_text(strip=True)
         link = a.get("href")
@@ -57,7 +62,7 @@ def parse_destructoid(soup: BeautifulSoup) -> list[tuple[str, str]]:
 
 
 def parse_pcgamer(soup: BeautifulSoup) -> list[tuple[str, str]]:
-    result: list[tuple[str, str]] = []
+    result = []
     for a in soup.select("a.article-link"):
         title = a.get_text(strip=True)
         link = a.get("href")
@@ -67,7 +72,7 @@ def parse_pcgamer(soup: BeautifulSoup) -> list[tuple[str, str]]:
 
 
 def parse_rps(soup: BeautifulSoup) -> list[tuple[str, str]]:
-    result: list[tuple[str, str]] = []
+    result = []
     for a in soup.select("a.c-block-link__overlay"):
         title = a.get_text(strip=True)
         link = a.get("href")
@@ -77,7 +82,7 @@ def parse_rps(soup: BeautifulSoup) -> list[tuple[str, str]]:
 
 
 def parse_nvidia_blog(soup: BeautifulSoup) -> list[tuple[str, str]]:
-    result: list[tuple[str, str]] = []
+    result = []
     for a in soup.select("a.blog-card__link"):
         title = a.get_text(strip=True)
         link = a.get("href")
@@ -89,11 +94,11 @@ def parse_nvidia_blog(soup: BeautifulSoup) -> list[tuple[str, str]]:
 # Источники
 # =========================
 
-SOURCES: list[NewsSource] = [
+SOURCES = [
     NewsSource("Destructoid", "https://www.destructoid.com/news/", parse_destructoid),
     NewsSource("PC Gamer", "https://www.pcgamer.com/news/", parse_pcgamer),
     NewsSource("Rock Paper Shotgun", "https://www.rockpapershotgun.com/news/", parse_rps),
-    NewsSource("NVIDIA Blog", "https://blogs.nvidia.com/", parse_nvidia_blog),
+    NewsSource("NVIDIA Blog", "https://blogs.nvidia.com/", parse_nvidia_blog, is_nvidia=True),
 ]
 
 # =========================
@@ -120,6 +125,9 @@ async def fetch_html(session: aiohttp.ClientSession, url: str) -> str:
 async def check_news(application: Application) -> None:
     logger.info("Проверка новостей...")
 
+    nvidia_articles = []
+    other_articles = []
+
     async with aiohttp.ClientSession() as session:
         for source in SOURCES:
             try:
@@ -127,26 +135,44 @@ async def check_news(application: Application) -> None:
                 soup = BeautifulSoup(html, "html.parser")
                 articles = source.parser(soup)
 
-                for title, link in articles[:5]:
-                    if link not in sent_links:
-                        text = (
-                            f"<b>{source.name}</b>\n"
-                            f"{title}\n"
-                            f"{link}"
-                        )
+                for title, link in articles:
+                    if link in sent_links:
+                        continue
 
-                        await application.bot.send_message(
-                            chat_id=TARGET_CHAT_ID,
-                            text=text,
-                            parse_mode="HTML",
-                            disable_web_page_preview=False,
-                        )
-
-                        sent_links.add(link)
-                        await asyncio.sleep(1)
+                    if source.is_nvidia:
+                        nvidia_articles.append((source.name, title, link))
+                    else:
+                        other_articles.append((source.name, title, link))
 
             except Exception as e:
                 logger.error(f"{source.name}: {e}")
+
+    # Ограничиваем по квотам
+    selected = (
+        nvidia_articles[:NVIDIA_QUOTA] +
+        other_articles[:OTHER_QUOTA]
+    )
+
+    for source_name, title, link in selected:
+        text = (
+            f"<b>{source_name}</b>\n"
+            f"{title}\n"
+            f"{link}"
+        )
+
+        try:
+            await application.bot.send_message(
+                chat_id=TARGET_CHAT_ID,
+                text=text,
+                parse_mode="HTML",
+                disable_web_page_preview=False,
+            )
+
+            sent_links.add(link)
+            await asyncio.sleep(1)
+
+        except Exception as e:
+            logger.error(f"Send error: {e}")
 
 # =========================
 # Фоновый цикл
@@ -169,7 +195,6 @@ def main() -> None:
     if not BOT_TOKEN or not TARGET_CHAT_ID:
         raise RuntimeError("BOT_TOKEN или TARGET_CHAT_ID не заданы")
 
-    # Создаём loop вручную (обязательно для Python 3.14)
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
