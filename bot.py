@@ -2,12 +2,14 @@ import asyncio
 import logging
 import os
 from dataclasses import dataclass
-from typing import Callable, Set
+from typing import Callable, Set, List, Tuple
 
 import aiohttp
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from telegram.ext import Application, ApplicationBuilder
+
+from openai import AsyncOpenAI
 
 # =========================
 # Логирование
@@ -28,11 +30,20 @@ load_dotenv()
 
 BOT_TOKEN: str = os.getenv("BOT_TOKEN", "")
 TARGET_CHAT_ID: str = os.getenv("TARGET_CHAT_ID", "")
-CHECK_INTERVAL_SECONDS: int = 120
+OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
+OPENAI_ORG: str = os.getenv("OPENAI_ORG", "")
 
-TOTAL_PER_CYCLE = 5
-NVIDIA_QUOTA = max(1, TOTAL_PER_CYCLE // 5)  # 20%
-OTHER_QUOTA = TOTAL_PER_CYCLE - NVIDIA_QUOTA
+CHECK_INTERVAL_SECONDS: int = 120
+TOTAL_PER_CYCLE = 8
+
+# =========================
+# OpenAI клиент
+# =========================
+
+openai_client = AsyncOpenAI(
+    api_key=OPENAI_API_KEY,
+    organization=OPENAI_ORG if OPENAI_ORG else None,
+)
 
 # =========================
 # Модель источника
@@ -42,14 +53,13 @@ OTHER_QUOTA = TOTAL_PER_CYCLE - NVIDIA_QUOTA
 class NewsSource:
     name: str
     url: str
-    parser: Callable[[BeautifulSoup], list[tuple[str, str]]]
-    is_nvidia: bool = False
+    parser: Callable[[BeautifulSoup], List[Tuple[str, str]]]
 
 # =========================
 # Парсеры
 # =========================
 
-def parse_destructoid(soup: BeautifulSoup) -> list[tuple[str, str]]:
+def parse_destructoid(soup: BeautifulSoup):
     result = []
     for a in soup.select("a.title"):
         title = a.get_text(strip=True)
@@ -61,7 +71,7 @@ def parse_destructoid(soup: BeautifulSoup) -> list[tuple[str, str]]:
     return result
 
 
-def parse_pcgamer(soup: BeautifulSoup) -> list[tuple[str, str]]:
+def parse_pcgamer(soup: BeautifulSoup):
     result = []
     for a in soup.select("a.article-link"):
         title = a.get_text(strip=True)
@@ -71,7 +81,7 @@ def parse_pcgamer(soup: BeautifulSoup) -> list[tuple[str, str]]:
     return result
 
 
-def parse_rps(soup: BeautifulSoup) -> list[tuple[str, str]]:
+def parse_rps(soup: BeautifulSoup):
     result = []
     for a in soup.select("a.c-block-link__overlay"):
         title = a.get_text(strip=True)
@@ -81,7 +91,7 @@ def parse_rps(soup: BeautifulSoup) -> list[tuple[str, str]]:
     return result
 
 
-def parse_nvidia_blog(soup: BeautifulSoup) -> list[tuple[str, str]]:
+def parse_nvidia_blog(soup: BeautifulSoup):
     result = []
     for a in soup.select("a.blog-card__link"):
         title = a.get_text(strip=True)
@@ -98,7 +108,7 @@ SOURCES = [
     NewsSource("Destructoid", "https://www.destructoid.com/news/", parse_destructoid),
     NewsSource("PC Gamer", "https://www.pcgamer.com/news/", parse_pcgamer),
     NewsSource("Rock Paper Shotgun", "https://www.rockpapershotgun.com/news/", parse_rps),
-    NewsSource("NVIDIA Blog", "https://blogs.nvidia.com/", parse_nvidia_blog, is_nvidia=True),
+    NewsSource("NVIDIA Blog", "https://blogs.nvidia.com/", parse_nvidia_blog),
 ]
 
 # =========================
@@ -112,11 +122,48 @@ sent_links: Set[str] = set()
 # =========================
 
 async def fetch_html(session: aiohttp.ClientSession, url: str) -> str:
-    headers = {"User-Agent": "Mozilla/5.0 (compatible; NewsBot/1.0)"}
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; NewsDigestBot/1.0)"}
     timeout = aiohttp.ClientTimeout(total=30)
     async with session.get(url, headers=headers, timeout=timeout) as response:
         response.raise_for_status()
         return await response.text()
+
+# =========================
+# ChatGPT генерация дайджеста
+# =========================
+
+async def generate_digest(news_items: List[Tuple[str, str, str]]) -> str:
+    """
+    news_items: (source_name, title, link)
+    """
+
+    formatted_news = "\n".join(
+        f"- [{source}] {title} ({link})"
+        for source, title, link in news_items
+    )
+
+    prompt = f"""
+Ты — редактор игрового новостного канала.
+
+Сделай единый краткий, структурированный дайджест новостей.
+Пиши живо, но профессионально.
+Не выдумывай факты.
+Сохрани ссылки.
+
+Новости:
+{formatted_news}
+"""
+
+    response = await openai_client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {"role": "system", "content": "Ты профессиональный игровой редактор."},
+            {"role": "user", "content": prompt},
+        ],
+        temperature=0.7,
+    )
+
+    return response.choices[0].message.content.strip()
 
 # =========================
 # Проверка новостей
@@ -125,8 +172,7 @@ async def fetch_html(session: aiohttp.ClientSession, url: str) -> str:
 async def check_news(application: Application) -> None:
     logger.info("Проверка новостей...")
 
-    nvidia_articles = []
-    other_articles = []
+    collected = []
 
     async with aiohttp.ClientSession() as session:
         for source in SOURCES:
@@ -139,40 +185,30 @@ async def check_news(application: Application) -> None:
                     if link in sent_links:
                         continue
 
-                    if source.is_nvidia:
-                        nvidia_articles.append((source.name, title, link))
-                    else:
-                        other_articles.append((source.name, title, link))
+                    collected.append((source.name, title, link))
 
             except Exception as e:
                 logger.error(f"{source.name}: {e}")
 
-    # Ограничиваем по квотам
-    selected = (
-        nvidia_articles[:NVIDIA_QUOTA] +
-        other_articles[:OTHER_QUOTA]
-    )
+    if not collected:
+        return
 
-    for source_name, title, link in selected:
-        text = (
-            f"<b>{source_name}</b>\n"
-            f"{title}\n"
-            f"{link}"
+    selected = collected[:TOTAL_PER_CYCLE]
+
+    try:
+        digest_text = await generate_digest(selected)
+
+        await application.bot.send_message(
+            chat_id=TARGET_CHAT_ID,
+            text=digest_text,
+            disable_web_page_preview=True,
         )
 
-        try:
-            await application.bot.send_message(
-                chat_id=TARGET_CHAT_ID,
-                text=text,
-                parse_mode="HTML",
-                disable_web_page_preview=False,
-            )
-
+        for _, _, link in selected:
             sent_links.add(link)
-            await asyncio.sleep(1)
 
-        except Exception as e:
-            logger.error(f"Send error: {e}")
+    except Exception as e:
+        logger.error(f"Digest generation error: {e}")
 
 # =========================
 # Фоновый цикл
@@ -194,6 +230,9 @@ async def news_loop(application: Application) -> None:
 def main() -> None:
     if not BOT_TOKEN or not TARGET_CHAT_ID:
         raise RuntimeError("BOT_TOKEN или TARGET_CHAT_ID не заданы")
+
+    if not OPENAI_API_KEY:
+        raise RuntimeError("OPENAI_API_KEY не задан")
 
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
