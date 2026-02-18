@@ -131,7 +131,7 @@ def get_image_prompt(news: Dict) -> str:
     )
     return final_prompt.strip()
 
-async def send_news_periodically(application: ApplicationBuilder, last_news_ids: Set[str], chat_ids: Set[int]):
+from telegram.ext import Application
     while True:
         all_news = fetch_all_selected_news()
         new_news = [n for lst in all_news.values() for n in lst if n["id"] not in last_news_ids]
@@ -195,23 +195,30 @@ async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def echo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Я понимаю только команды /start и /stop.")
 
+async def post_init(application: Application):
+    application.create_task(
+        send_news_periodically(application, last_news_ids, chat_ids)
+    )
+    
 # --- MAIN --- 
 def main():
     if not BOT_TOKEN:
         raise RuntimeError("TELEGRAM_BOT_TOKEN не задан в .env")
 
-    application = ApplicationBuilder().token(BOT_TOKEN).build()
-
+    application = (
+        ApplicationBuilder()
+        .token(BOT_TOKEN)
+        .post_init(post_init)
+        .build()
+    )
+    
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("stop", stop))
     application.add_handler(MessageHandler(filters.ALL, echo))
 
-    application.create_task(
-        send_news_periodically(application, last_news_ids, chat_ids)
-    )
-
-    application.run_polling()
+     application.run_polling()
 
 
 if __name__ == "__main__":
     main()
+
