@@ -97,13 +97,13 @@ SOURCES: list[NewsSource] = [
 ]
 
 # =========================
-# Хранилище отправленного
+# Память
 # =========================
 
 sent_links: Set[str] = set()
 
 # =========================
-# Загрузка HTML
+# HTTP
 # =========================
 
 async def fetch_html(session: aiohttp.ClientSession, url: str) -> str:
@@ -169,12 +169,16 @@ def main() -> None:
     if not BOT_TOKEN or not TARGET_CHAT_ID:
         raise RuntimeError("BOT_TOKEN или TARGET_CHAT_ID не заданы")
 
+    # Создаём loop вручную (обязательно для Python 3.14)
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
     application = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    async def start_background_task(app: Application) -> None:
+    async def startup(app: Application) -> None:
         asyncio.create_task(news_loop(app))
 
-    application.post_init = start_background_task
+    application.post_init = startup
 
     logger.info("Бот запущен.")
     application.run_polling()
