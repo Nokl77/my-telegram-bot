@@ -8,6 +8,8 @@ import traceback
 import sys
 import signal
 
+print("=== BOT FILE LOADED ===", flush=True)
+
 # ================= CONFIG =================
 
 BOT_TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"
@@ -203,3 +205,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
