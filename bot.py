@@ -8,6 +8,8 @@ import traceback
 import sys
 import signal
 
+print("STARTING PYTHON PROCESS", flush=True)
+
 print("=== BOT FILE LOADED ===", flush=True)
 
 # ================= CONFIG =================
@@ -205,4 +207,5 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
 
