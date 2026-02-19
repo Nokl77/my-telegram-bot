@@ -108,12 +108,14 @@ async def generate_digest(news_items):
     )
 
     chatgpt_prompt = (
-        "Составь дайджест новостей игрового и IT-миров обязательно на русском языке. "
-        "Для каждой новости отдельный абзац. Названия игр и компаний только на английском. "
-        "Без нумерации, без субъективных оценок.\n\n"
-        f"{formatted}"
-    )
-
+    "Create a digest of news from the gaming and IT worlds, written entirely in Russian. "
+    "Each news item must be at least 250 characters long. News should be separated by a blank line. "
+    "Each news item must start with an appropriate sticker related to the topic. "
+    "The names of games and companies should be written only in English. "
+    "No numbering, no subjective opinions.\n\n"
+    f"{formatted}"
+)
+    
     messages = [
         {"role": "system", "content": "Ты профессиональный редактор гейм- и IT-дайджестов."},
         {"role": "user", "content": chatgpt_prompt}
@@ -189,6 +191,61 @@ async def generator_worker():
     while True:
         news_items = await news_queue.get()
 
+        # =========================
+        # AI Semantic Deduplication
+        # =========================
+
+        async def semantic_deduplicate(news_items):
+            """
+            Removes semantically duplicated news using AI.
+            Keeps only one item if multiple entries describe the same event.
+            """
+
+            if len(news_items) <= 1:
+                return news_items
+
+            formatted = "\n".join(
+                f"{i}. [{src}] {title}"
+                for i, (src, title, _) in enumerate(news_items, start=1)
+            )
+
+            prompt = (
+                "You are a news editor. Below is a list of news headlines.\n\n"
+                "Your task:\n"
+                "- Detect headlines that describe the same event or announcement.\n"
+                "- If multiple headlines describe the same story, keep only ONE.\n"
+                "- Return ONLY the numbers of the headlines that should be kept.\n"
+                "- Output format example: 1,3,5,7\n\n"
+                "Headlines:\n"
+                f"{formatted}"
+            )
+
+            messages = [
+                {"role": "system", "content": "You detect semantic duplicates in news headlines."},
+                {"role": "user", "content": prompt}
+            ]
+
+            try:
+                response = await ask_gpt(messages, temperature=0)
+                keep_numbers = {
+                    int(x.strip())
+                    for x in response.replace("\n", "").split(",")
+                    if x.strip().isdigit()
+                }
+
+                filtered = [
+                    item for i, item in enumerate(news_items, start=1)
+                    if i in keep_numbers
+                ]
+
+                logger.info(f"Semantic filter removed {len(news_items) - len(filtered)} duplicates")
+                return filtered
+
+            except Exception as e:
+                logger.error(f"Semantic deduplication error: {e}")
+                return news_items
+
+
         try:
             logger.info("Генерация дайджеста...")
             digest = await generate_digest(news_items)
@@ -233,4 +290,5 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
 
