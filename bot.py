@@ -4,6 +4,7 @@ import os
 import base64
 from dataclasses import dataclass
 from typing import Callable, Set, List, Tuple
+
 import aiohttp
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
@@ -72,19 +73,14 @@ sent_links: Set[str] = set()
 # Telegram
 # =========================
 
-async def send_message(session, text):
-    async with session.post(
-        f"{TELEGRAM_API}/sendMessage",
-        json={"chat_id": TARGET_CHAT_ID, "text": text, "parse_mode": "Markdown"}
-    ) as r:
-        await r.text()
-
-async def send_photo(session, image_bytes):
+async def send_photo_with_caption(session, image_bytes, caption):
     data = aiohttp.FormData()
     data.add_field("chat_id", TARGET_CHAT_ID)
     data.add_field("photo", image_bytes,
                    filename="digest.png",
                    content_type="image/png")
+    data.add_field("caption", caption)
+    data.add_field("parse_mode", "Markdown")
 
     async with session.post(f"{TELEGRAM_API}/sendPhoto", data=data) as r:
         await r.text()
@@ -95,7 +91,7 @@ async def send_photo(session, image_bytes):
 
 async def ask_gpt(messages, temperature=0.6):
     response = await openai_client.chat.completions.create(
-        model="gpt-3.5-turbo",
+        model="gpt-4o-mini",
         messages=messages,
         temperature=temperature,
     )
@@ -106,69 +102,33 @@ async def ask_gpt(messages, temperature=0.6):
 # =========================
 
 async def generate_digest(news_items):
-
     formatted = "\n".join(
         f"- [{src}] {title} ({link})"
         for src, title, link in news_items
     )
 
     chatgpt_prompt = (
-        "Составь дайджест новостей игрового и IT-миров за прошедшее время обязательно на русском языке. "
-        "Для каждой новости напиши отдельный абзац. Названия игр и компаний приводи только на английском (оригинал), не переводя их, всё остальное по-русски. "
-        "Не используй нумерацию, не навязывай субъективные оценки, не растекайся мыслями, не переводи названия игр и компаний. "
-        "Название каждой игры или компании выделяй жирным шрифтом.\n\n"
+        "Составь дайджест новостей игрового и IT-миров обязательно на русском языке. "
+        "Для каждой новости отдельный абзац. Названия игр и компаний только на английском. "
+        "Без нумерации, без субъективных оценок.\n\n"
         f"{formatted}"
     )
 
     messages = [
-        {"role": "system", "content": "Ты профессиональный редактор гейм- и IT-дайджестов. Не переводишь названия игр и компаний."},
+        {"role": "system", "content": "Ты профессиональный редактор гейм- и IT-дайджестов."},
         {"role": "user", "content": chatgpt_prompt}
     ]
 
     return await ask_gpt(messages)
 
 # =========================
-# Генерация промта изображения
-# =========================
-
-async def get_image_prompt(digest_text: str) -> str:
-
-    sys_prompt = (
-        "You are creating prompts for image generation AIs in English. "
-        "Base your prompt on the news article below. Come up with a short scene description or illustration idea (1-2 sentences), "
-        "do not use names of real game characters: only general descriptions (for example, 'a young knight in green costume'). "
-        "Keep only English names of games and companies. Do not include names, brands, logos, interfaces or text elements."
-    )
-
-    user_prompt = f"News:\n{digest_text[:600]}"
-
-    messages = [
-        {"role": "system", "content": sys_prompt},
-        {"role": "user", "content": user_prompt}
-    ]
-
-    first_prompt = await ask_gpt(messages)
-
-    final_prompt = (
-        "The character from image.png (a pixel art character with short brown hair, black square glasses, "
-        "a white T-shirt with a black spiral symbol, red and orange checkered suspenders, blue jeans with a brown belt, and brown shoes) "
-        f"is present in the scene. {first_prompt} The character is visibly interacting with the main elements of the scene or other characters; "
-        "make their interaction clear and meaningful (for example, talking, working together, or sharing an activity)."
-    )
-
-    return final_prompt.strip()
-
-# =========================
 # Генерация изображения
 # =========================
 
 async def generate_image(digest_text):
-
-    img_prompt = await get_image_prompt(digest_text)
-
     response = await openai_client.images.generate(
         model="gpt-image-1",
-        prompt=img_prompt,
+        prompt=f"Illustration based on this news digest:\n{digest_text[:800]}",
         size="1024x1024",
     )
 
@@ -183,46 +143,93 @@ async def fetch_html(session, url):
     async with session.get(url, headers={"User-Agent": "Mozilla/5.0"}) as r:
         return await r.text()
 
+async def parse_sources(session):
+    collected = []
+
+    for source in SOURCES:
+        try:
+            html = await fetch_html(session, source.url)
+            soup = BeautifulSoup(html, "html.parser")
+            articles = source.parser(soup)
+
+            for title, link in articles:
+                if link not in sent_links:
+                    collected.append((source.name, title, link))
+        except Exception as e:
+            logger.error(f"{source.name} error: {e}")
+
+    return collected[:TOTAL_PER_CYCLE]
+
 # =========================
-# Главный цикл
+# Очереди и синхронизация
+# =========================
+
+news_queue: asyncio.Queue = asyncio.Queue()
+publish_queue: asyncio.Queue = asyncio.Queue()
+cycle_lock = asyncio.Lock()
+
+# =========================
+# Workers
+# =========================
+
+async def parser_worker():
+    while True:
+        async with cycle_lock:
+            logger.info("Парсинг источников...")
+
+            async with aiohttp.ClientSession() as session:
+                news = await parse_sources(session)
+
+            if news:
+                await news_queue.put(news)
+
+        await asyncio.sleep(CHECK_INTERVAL)
+
+async def generator_worker():
+    while True:
+        news_items = await news_queue.get()
+
+        try:
+            logger.info("Генерация дайджеста...")
+            digest = await generate_digest(news_items)
+
+            logger.info("Генерация изображения...")
+            image = await generate_image(digest)
+
+            await publish_queue.put((digest, image, news_items))
+
+        except Exception as e:
+            logger.error(f"Generation error: {e}")
+
+        news_queue.task_done()
+
+async def publisher_worker():
+    while True:
+        digest, image, news_items = await publish_queue.get()
+
+        try:
+            logger.info("Отправка поста в Telegram...")
+            async with aiohttp.ClientSession() as session:
+                await send_photo_with_caption(session, image, digest)
+
+            for _, _, link in news_items:
+                sent_links.add(link)
+
+        except Exception as e:
+            logger.error(f"Publish error: {e}")
+
+        publish_queue.task_done()
+
+# =========================
+# Запуск
 # =========================
 
 async def main():
-
-    while True:
-        try:
-            collected = []
-
-            async with aiohttp.ClientSession() as session:
-
-                for source in SOURCES:
-                    try:
-                        html = await fetch_html(session, source.url)
-                        soup = BeautifulSoup(html, "html.parser")
-                        articles = source.parser(soup)
-
-                        for title, link in articles:
-                            if link not in sent_links:
-                                collected.append((source.name, title, link))
-                    except Exception as e:
-                        logger.error(f"{source.name} error: {e}")
-
-                if collected:
-                    selected = collected[:TOTAL_PER_CYCLE]
-
-                    digest = await generate_digest(selected)
-                    image = await generate_image(digest)
-
-                    await send_photo(session, image)
-                    await send_message(session, digest)
-
-                    for _, _, link in selected:
-                        sent_links.add(link)
-
-        except Exception as e:
-            logger.error(f"Main loop error: {e}")
-
-        await asyncio.sleep(CHECK_INTERVAL)
+    await asyncio.gather(
+        parser_worker(),
+        generator_worker(),
+        publisher_worker()
+    )
 
 if __name__ == "__main__":
     asyncio.run(main())
