@@ -9,7 +9,8 @@ from typing import Callable, Set, List, Tuple
 import aiohttp
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
-from telegram.ext import Application, ApplicationBuilder
+from telegram import Bot
+from telegram.ext import ApplicationBuilder
 
 from openai import AsyncOpenAI
 
@@ -34,7 +35,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 TARGET_CHAT_ID = os.getenv("TARGET_CHAT_ID")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
-CHECK_INTERVAL = 60 * 2
+CHECK_INTERVAL = 120
 TOTAL_PER_CYCLE = 8
 
 if not BOT_TOKEN or not TARGET_CHAT_ID:
@@ -50,7 +51,7 @@ if not OPENAI_API_KEY:
 openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
 
 # =========================
-# Модель источника
+# Источники
 # =========================
 
 @dataclass(slots=True)
@@ -58,10 +59,6 @@ class NewsSource:
     name: str
     url: str
     parser: Callable[[BeautifulSoup], List[Tuple[str, str]]]
-
-# =========================
-# Парсеры
-# =========================
 
 def parse_destructoid(soup):
     result = []
@@ -74,39 +71,20 @@ def parse_destructoid(soup):
             result.append((title, link))
     return result
 
-
 def parse_pcgamer(soup):
-    result = []
-    for a in soup.select("a.article-link"):
-        title = a.get_text(strip=True)
-        link = a.get("href")
-        if title and link:
-            result.append((title, link))
-    return result
-
+    return [(a.get_text(strip=True), a.get("href"))
+            for a in soup.select("a.article-link")
+            if a.get_text(strip=True) and a.get("href")]
 
 def parse_rps(soup):
-    result = []
-    for a in soup.select("a.c-block-link__overlay"):
-        title = a.get_text(strip=True)
-        link = a.get("href")
-        if title and link:
-            result.append((title, link))
-    return result
-
+    return [(a.get_text(strip=True), a.get("href"))
+            for a in soup.select("a.c-block-link__overlay")
+            if a.get_text(strip=True) and a.get("href")]
 
 def parse_nvidia_blog(soup):
-    result = []
-    for a in soup.select("a.blog-card__link"):
-        title = a.get_text(strip=True)
-        link = a.get("href")
-        if title and link:
-            result.append((title, link))
-    return result
-
-# =========================
-# Источники
-# =========================
+    return [(a.get_text(strip=True), a.get("href"))
+            for a in soup.select("a.blog-card__link")
+            if a.get_text(strip=True) and a.get("href")]
 
 SOURCES = [
     NewsSource("Destructoid", "https://www.destructoid.com/news/", parse_destructoid),
@@ -148,7 +126,7 @@ async def generate_digest(news_items):
 """
 
     response = await openai_client.chat.completions.create(
-        model="gpt-3.5-turbo",
+        model="gpt-4o-mini",
         messages=[{"role": "user", "content": prompt}],
         temperature=0.6,
     )
@@ -165,9 +143,8 @@ async def generate_image_prompt(digest_text):
         "You are creating prompts for image generation AIs in English. "
         "Base your prompt on the news article below. "
         "Come up with a short scene description (1-2 sentences). "
-        "Do not use names of real characters. "
-        "Keep only English names of games and companies. "
-        "Do not include logos, text or UI.\n\n"
+        "Do not use real character names. "
+        "Do not include logos or text.\n\n"
         f"{digest_text}"
     )
 
@@ -186,11 +163,9 @@ async def generate_image_prompt(digest_text):
 async def generate_image(scene_prompt):
 
     final_prompt = (
-        "The character from image.png (a pixel art character with short brown hair, "
-        "black square glasses, white T-shirt with black spiral symbol, "
-        "red and orange checkered suspenders, blue jeans, brown shoes) "
-        f"is present in the scene. {scene_prompt} "
-        "The character clearly interacts with the scene."
+        "The pixel art character with short brown hair, black square glasses, "
+        "white T-shirt with black spiral symbol, red suspenders, blue jeans and brown shoes "
+        f"is in the scene. {scene_prompt} The character interacts with the scene."
     )
 
     result = await openai_client.images.generate(
@@ -209,79 +184,62 @@ async def generate_image(scene_prompt):
     return bio
 
 # =========================
-# Проверка новостей
+# Основной цикл
 # =========================
 
-async def check_news(application):
+async def news_loop(bot: Bot):
 
-    collected = []
-
-    async with aiohttp.ClientSession() as session:
-        for source in SOURCES:
-            try:
-                html = await fetch_html(session, source.url)
-                soup = BeautifulSoup(html, "html.parser")
-                articles = source.parser(soup)
-
-                for title, link in articles:
-                    if link not in sent_links:
-                        collected.append((source.name, title, link))
-
-            except Exception as e:
-                logger.error(f"{source.name}: {e}")
-
-    if not collected:
-        return
-
-    selected = collected[:TOTAL_PER_CYCLE]
-
-    try:
-        digest_text = await generate_digest(selected)
-        scene_prompt = await generate_image_prompt(digest_text)
-        image_file = await generate_image(scene_prompt)
-
-        await application.bot.send_photo(
-            chat_id=TARGET_CHAT_ID,
-            photo=image_file,
-        )
-
-        await application.bot.send_message(
-            chat_id=TARGET_CHAT_ID,
-            text=digest_text,
-            disable_web_page_preview=True,
-        )
-
-        for _, _, link in selected:
-            sent_links.add(link)
-
-    except Exception as e:
-        logger.error(f"Generation error: {e}")
-
-# =========================
-# Фоновый цикл
-# =========================
-
-async def news_loop(application):
     while True:
         try:
-            await check_news(application)
-        except Exception as e:
-            logger.error(f"Loop error: {e}")
+            collected = []
 
-        await asyncio.sleep(CHECK_INTERVAL_SECONDS)
+            async with aiohttp.ClientSession() as session:
+                for source in SOURCES:
+                    try:
+                        html = await fetch_html(session, source.url)
+                        soup = BeautifulSoup(html, "html.parser")
+                        articles = source.parser(soup)
+
+                        for title, link in articles:
+                            if link not in sent_links:
+                                collected.append((source.name, title, link))
+
+                    except Exception as e:
+                        logger.error(f"{source.name}: {e}")
+
+            if collected:
+                selected = collected[:TOTAL_PER_CYCLE]
+
+                digest = await generate_digest(selected)
+                scene_prompt = await generate_image_prompt(digest)
+                image = await generate_image(scene_prompt)
+
+                await bot.send_photo(chat_id=TARGET_CHAT_ID, photo=image)
+                await bot.send_message(chat_id=TARGET_CHAT_ID, text=digest)
+
+                for _, _, link in selected:
+                    sent_links.add(link)
+
+        except Exception as e:
+            logger.error(f"Main loop error: {e}")
+
+        await asyncio.sleep(CHECK_INTERVAL)
 
 # =========================
 # Запуск
 # =========================
 
-def main():
+async def main():
     application = ApplicationBuilder().token(BOT_TOKEN).build()
+    bot = application.bot
 
-    async def startup(app):
-        asyncio.create_task(news_loop(app))
+    await application.initialize()
+    await application.start()
 
-    application.post_init = startup
-    application.run_polling()
+    asyncio.create_task(news_loop(bot))
+
+    logger.info("Бот запущен.")
+    await application.updater.start_polling()
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
