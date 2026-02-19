@@ -14,8 +14,11 @@ from openai import AsyncOpenAI
 # Настройки
 # =========================
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+)
+logger = logging.getLogger("news-bot")
 
 load_dotenv()
 
@@ -23,8 +26,8 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 TARGET_CHAT_ID = os.getenv("TARGET_CHAT_ID")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
-CHECK_INTERVAL = 60 * 5
-TOTAL_PER_CYCLE = 5
+CHECK_INTERVAL = 60 * 10
+TOTAL_PER_CYCLE = 24
 
 if not BOT_TOKEN or not TARGET_CHAT_ID:
     raise RuntimeError("BOT_TOKEN или TARGET_CHAT_ID не заданы")
@@ -74,31 +77,47 @@ sent_links: Set[str] = set()
 # =========================
 
 async def send_photo_with_caption(session, image_bytes, caption):
-    data = aiohttp.FormData()
-    data.add_field("chat_id", TARGET_CHAT_ID)
-    data.add_field("photo", image_bytes,
-                   filename="digest.png",
-                   content_type="image/png")
-    data.add_field("caption", caption)
-    data.add_field("parse_mode", "Markdown")
+    try:
+        data = aiohttp.FormData()
+        data.add_field("chat_id", TARGET_CHAT_ID)
+        data.add_field("photo", image_bytes,
+                       filename="digest.png",
+                       content_type="image/png")
+        data.add_field("caption", caption)
+        data.add_field("parse_mode", "Markdown")
 
-    async with session.post(f"{TELEGRAM_API}/sendPhoto", data=data) as r:
-        await r.text()
+        async with session.post(
+            f"{TELEGRAM_API}/sendPhoto",
+            data=data,
+            timeout=aiohttp.ClientTimeout(total=30)
+        ) as r:
+            text = await r.text()
+            if r.status != 200:
+                logger.error(f"Telegram API error {r.status}: {text}")
+            else:
+                logger.info("Post successfully sent to Telegram")
+
+    except Exception:
+        logger.exception("Failed to send message to Telegram")
 
 # =========================
 # OpenAI helper
 # =========================
 
 async def ask_gpt(messages, temperature=0.6):
-    response = await openai_client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=messages,
-        temperature=temperature,
-    )
-    return response.choices[0].message.content.strip()
+    try:
+        response = await openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=messages,
+            temperature=temperature,
+        )
+        return response.choices[0].message.content.strip()
+    except Exception:
+        logger.exception("OpenAI request failed")
+        raise
 
 # =========================
-# Генерация дайджеста
+# Генерация
 # =========================
 
 async def generate_digest(news_items):
@@ -107,47 +126,44 @@ async def generate_digest(news_items):
         for src, title, link in news_items
     )
 
-    chatgpt_prompt = (
-    "Create a digest of news from the gaming and IT worlds, written entirely in Russian. "
-    "Each news item must be at least 250 characters long. News should be separated by a blank line. "
-    "Each news item must start with an appropriate sticker related to the topic. "
-    "The names of games and companies should be written only in English. "
-    "No numbering, no subjective opinions.\n\n"
-    f"{formatted}"
-)
-    
     messages = [
-        {"role": "system", "content": "Ты профессиональный редактор гейм- и IT-дайджестов."},
-        {"role": "user", "content": chatgpt_prompt}
+        {"role": "system", "content": "You are a professional tech news editor."},
+        {"role": "user", "content": formatted}
     ]
 
     return await ask_gpt(messages)
 
-# =========================
-# Генерация изображения
-# =========================
-
 async def generate_image(digest_text):
-    response = await openai_client.images.generate(
-        model="gpt-image-1",
-        prompt=f"Illustration based on this news digest:\n{digest_text[:800]}",
-        size="1024x1024",
-    )
-
-    image_base64 = response.data[0].b64_json
-    return base64.b64decode(image_base64)
+    try:
+        response = await openai_client.images.generate(
+            model="gpt-image-1",
+            prompt=digest_text[:800],
+            size="1024x1024",
+        )
+        image_base64 = response.data[0].b64_json
+        return base64.b64decode(image_base64)
+    except Exception:
+        logger.exception("Image generation failed")
+        raise
 
 # =========================
 # Парсинг
 # =========================
 
 async def fetch_html(session, url):
-    async with session.get(url, headers={"User-Agent": "Mozilla/5.0"}) as r:
-        return await r.text()
+    try:
+        async with session.get(
+            url,
+            headers={"User-Agent": "Mozilla/5.0"},
+            timeout=aiohttp.ClientTimeout(total=30)
+        ) as r:
+            return await r.text()
+    except Exception:
+        logger.exception(f"Failed to fetch {url}")
+        raise
 
 async def parse_sources(session):
     collected = []
-
     for source in SOURCES:
         try:
             html = await fetch_html(session, source.url)
@@ -157,138 +173,117 @@ async def parse_sources(session):
             for title, link in articles:
                 if link not in sent_links:
                     collected.append((source.name, title, link))
-        except Exception as e:
-            logger.error(f"{source.name} error: {e}")
+
+        except Exception:
+            logger.exception(f"Error while parsing {source.name}")
 
     return collected[:TOTAL_PER_CYCLE]
 
 # =========================
-# Очереди и синхронизация
+# Очереди
 # =========================
 
 news_queue: asyncio.Queue = asyncio.Queue()
 publish_queue: asyncio.Queue = asyncio.Queue()
-cycle_lock = asyncio.Lock()
 
 # =========================
 # Workers
 # =========================
 
 async def parser_worker():
+    logger.info("Parser worker started")
     while True:
-        async with cycle_lock:
-            logger.info("Парсинг источников...")
-
+        try:
             async with aiohttp.ClientSession() as session:
                 news = await parse_sources(session)
+                if news:
+                    await news_queue.put(news)
+                    logger.info(f"Collected {len(news)} new articles")
 
-            if news:
-                await news_queue.put(news)
+        except asyncio.CancelledError:
+            logger.warning("Parser worker cancelled")
+            raise
+        except Exception:
+            logger.exception("Unexpected error in parser_worker")
 
         await asyncio.sleep(CHECK_INTERVAL)
 
 async def generator_worker():
+    logger.info("Generator worker started")
     while True:
-        news_items = await news_queue.get()
-
-        # =========================
-        # AI Semantic Deduplication
-        # =========================
-
-        async def semantic_deduplicate(news_items):
-            """
-            Removes semantically duplicated news using AI.
-            Keeps only one item if multiple entries describe the same event.
-            """
-
-            if len(news_items) <= 1:
-                return news_items
-
-            formatted = "\n".join(
-                f"{i}. [{src}] {title}"
-                for i, (src, title, _) in enumerate(news_items, start=1)
-            )
-
-            prompt = (
-                "You are a news editor. Below is a list of news headlines.\n\n"
-                "Your task:\n"
-                "- Detect headlines that describe the same event or announcement.\n"
-                "- If multiple headlines describe the same story, keep only ONE.\n"
-                "- Return ONLY the numbers of the headlines that should be kept.\n"
-                "- Output format example: 1,3,5,7\n\n"
-                "Headlines:\n"
-                f"{formatted}"
-            )
-
-            messages = [
-                {"role": "system", "content": "You detect semantic duplicates in news headlines."},
-                {"role": "user", "content": prompt}
-            ]
-
-            try:
-                response = await ask_gpt(messages, temperature=0)
-                keep_numbers = {
-                    int(x.strip())
-                    for x in response.replace("\n", "").split(",")
-                    if x.strip().isdigit()
-                }
-
-                filtered = [
-                    item for i, item in enumerate(news_items, start=1)
-                    if i in keep_numbers
-                ]
-
-                logger.info(f"Semantic filter removed {len(news_items) - len(filtered)} duplicates")
-                return filtered
-
-            except Exception as e:
-                logger.error(f"Semantic deduplication error: {e}")
-                return news_items
-
-
         try:
-            logger.info("Генерация дайджеста...")
-            digest = await generate_digest(news_items)
+            news_items = await news_queue.get()
 
-            logger.info("Генерация изображения...")
+            digest = await generate_digest(news_items)
             image = await generate_image(digest)
 
             await publish_queue.put((digest, image, news_items))
+            news_queue.task_done()
 
-        except Exception as e:
-            logger.error(f"Generation error: {e}")
-
-        news_queue.task_done()
+        except asyncio.CancelledError:
+            logger.warning("Generator worker cancelled")
+            raise
+        except Exception:
+            logger.exception("Unexpected error in generator_worker")
 
 async def publisher_worker():
+    logger.info("Publisher worker started")
     while True:
-        digest, image, news_items = await publish_queue.get()
-
         try:
-            logger.info("Отправка поста в Telegram...")
+            digest, image, news_items = await publish_queue.get()
+
             async with aiohttp.ClientSession() as session:
                 await send_photo_with_caption(session, image, digest)
 
             for _, _, link in news_items:
                 sent_links.add(link)
 
-        except Exception as e:
-            logger.error(f"Publish error: {e}")
+            publish_queue.task_done()
 
-        publish_queue.task_done()
+        except asyncio.CancelledError:
+            logger.warning("Publisher worker cancelled")
+            raise
+        except Exception:
+            logger.exception("Unexpected error in publisher_worker")
 
 # =========================
-# Запуск
+# Heartbeat
+# =========================
+
+async def heartbeat():
+    while True:
+        logger.info("Bot is alive")
+        await asyncio.sleep(300)
+
+# =========================
+# Main
 # =========================
 
 async def main():
-    await asyncio.gather(
-        parser_worker(),
-        generator_worker(),
-        publisher_worker()
-    )
+    loop = asyncio.get_running_loop()
+
+    def handle_async_exception(loop, context):
+        logger.error(f"Unhandled asyncio exception: {context}", exc_info=True)
+
+    loop.set_exception_handler(handle_async_exception)
+
+    tasks = [
+        asyncio.create_task(parser_worker()),
+        asyncio.create_task(generator_worker()),
+        asyncio.create_task(publisher_worker()),
+        asyncio.create_task(heartbeat())
+    ]
+
+    try:
+        await asyncio.gather(*tasks)
+    except Exception:
+        logger.exception("Fatal error in main()")
+    finally:
+        for task in tasks:
+            task.cancel()
 
 if __name__ == "__main__":
-    asyncio.run(main())
-
-
+    try:
+        asyncio.run(main())
+    except Exception:
+        logger.exception("Bot crashed at top level")
