@@ -4,7 +4,8 @@ import os
 import base64
 from io import BytesIO
 from dataclasses import dataclass
-from typing import Callable, Set, List, Tuple
+from typing import Callable, Set, List, Tuple, Dict
+import random
 
 import aiohttp
 from bs4 import BeautifulSoup
@@ -103,11 +104,20 @@ async def generate_digest(news_items):
         for src, title, link in news_items
     )
 
+    chatgpt_prompt = (
+        "Составь дайджест новостей игрового и IT-миров за прошедшее время обязательно на русском языке. "
+        "Для каждой новости напиши отдельный абзац. Названия игр и компаний приводи только на английском (оригинал), не переводя их, всё остальное по-русски. "
+        "Не используй нумерацию, не навязывай субъективные оценки, не растекайся мыслями, не переводи названия игр и компаний. "
+        "Название каждой игры или компании выделяй жирным шрифтом.\n\n"
+        f"{formatted}"
+    )
+
     response = await openai_client.chat.completions.create(
-        model="gpt-4o-mini",
+        model="gpt-3.5-turbo",
         messages=[{
-            "role": "user",
-            "content": f"Сделай краткий структурированный дайджест:\n\n{formatted}"
+            "role": "system", "content": "Ты профессиональный редактор гейм- и IT-дайджестов. Не переводишь названия игр и компаний."
+        }, {
+            "role": "user", "content": chatgpt_prompt
         }],
         temperature=0.6,
     )
@@ -116,14 +126,46 @@ async def generate_digest(news_items):
 
 async def generate_image(digest_text):
 
+    img_prompt = get_image_prompt(digest_text)
+
     response = await openai_client.images.generate(
         model="gpt-image-1",
-        prompt=f"Pixel art scene based on: {digest_text}",
+        prompt=img_prompt,
         size="1024x1024",
     )
 
     image_base64 = response.data[0].b64_json
     return base64.b64decode(image_base64)
+
+# =========================
+# Генерация промта для изображения
+# =========================
+
+def get_image_prompt(news: Dict) -> str:
+    sys_prompt = (
+        "You are creating prompts for image generation AIs in English. "
+        "Base your prompt on the news article below. Come up with a short scene description or illustration idea (1-2 sentences), "
+        "do not use names of real game characters: only general descriptions (for example, 'a young knight in green costume'). "
+        "Keep only English names of games and companies. Do not include names, brands, logos, interfaces or text elements."
+    )
+    user_prompt = (
+        f"News:\n{news['title']}\n{news['full_text'][:600]}\n"
+    )
+    messages = [
+        {"role": "system", "content": sys_prompt},
+        {"role": "user", "content": user_prompt}
+    ]
+    first_prompt = await ask_gpt(messages)
+    if not first_prompt:
+        return "Prompt could not be generated."
+    first_prompt = first_prompt.strip()
+    final_prompt = (
+        "The character from image.png (a pixel art character with short brown hair, black square glasses, "
+        "a white T-shirt with a black spiral symbol, red and orange checkered suspenders, blue jeans with a brown belt, and brown shoes) "
+        f"is present in the scene. {first_prompt} The character is visibly interacting with the main elements of the scene or other characters; "
+        "make their interaction clear and meaningful (for example, talking, working together, or sharing an activity)."
+    )
+    return final_prompt.strip()
 
 # =========================
 # Парсинг
