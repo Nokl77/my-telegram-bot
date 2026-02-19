@@ -121,11 +121,13 @@ async def ask_gpt(messages, temperature=0.6):
 # =========================
 
 async def generate_digest(news_items):
+    # Форматируем новости в строку
     formatted = "\n".join(
         f"- [{src}] {title} ({link})"
         for src, title, link in news_items
     )
 
+    # Формируем запрос для GPT
     chatgpt_prompt = (
         "Составь дайджест новостей игрового и IT-миров, обязательно на русском языке. "
         "Каждая новость должна быть не менее 250 символов. "
@@ -136,6 +138,12 @@ async def generate_digest(news_items):
         f"{formatted}"
     )
 
+    # Теперь правильно формируем список для передачи в ask_gpt
+    messages = [
+        {"role": "user", "content": chatgpt_prompt}
+    ]
+
+    # Отправляем запрос к GPT
     return await ask_gpt(messages)
 
 async def generate_image(digest_text):
@@ -292,6 +300,7 @@ if __name__ == "__main__":
         asyncio.run(main())
     except Exception:
         logger.exception("Bot crashed at top level")
+
 
 
 
