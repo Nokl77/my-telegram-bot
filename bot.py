@@ -2,11 +2,8 @@ import asyncio
 import logging
 import os
 import base64
-from io import BytesIO
 from dataclasses import dataclass
-from typing import Callable, Set, List, Tuple, Dict
-import random
-
+from typing import Callable, Set, List, Tuple
 import aiohttp
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
@@ -35,7 +32,6 @@ if not OPENAI_API_KEY:
     raise RuntimeError("OPENAI_API_KEY не задан")
 
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
-
 openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
 
 # =========================
@@ -73,13 +69,13 @@ SOURCES = [
 sent_links: Set[str] = set()
 
 # =========================
-# Telegram отправка
+# Telegram
 # =========================
 
 async def send_message(session, text):
     async with session.post(
         f"{TELEGRAM_API}/sendMessage",
-        json={"chat_id": TARGET_CHAT_ID, "text": text}
+        json={"chat_id": TARGET_CHAT_ID, "text": text, "parse_mode": "Markdown"}
     ) as r:
         await r.text()
 
@@ -94,7 +90,19 @@ async def send_photo(session, image_bytes):
         await r.text()
 
 # =========================
-# OpenAI
+# OpenAI helper
+# =========================
+
+async def ask_gpt(messages, temperature=0.6):
+    response = await openai_client.chat.completions.create(
+        model="gpt-3.5-turbo",
+        messages=messages,
+        temperature=temperature,
+    )
+    return response.choices[0].message.content.strip()
+
+# =========================
+# Генерация дайджеста
 # =========================
 
 async def generate_digest(news_items):
@@ -112,21 +120,51 @@ async def generate_digest(news_items):
         f"{formatted}"
     )
 
-    response = await openai_client.chat.completions.create(
-        model="gpt-3.5-turbo",
-        messages=[{
-            "role": "system", "content": "Ты профессиональный редактор гейм- и IT-дайджестов. Не переводишь названия игр и компаний."
-        }, {
-            "role": "user", "content": chatgpt_prompt
-        }],
-        temperature=0.6,
+    messages = [
+        {"role": "system", "content": "Ты профессиональный редактор гейм- и IT-дайджестов. Не переводишь названия игр и компаний."},
+        {"role": "user", "content": chatgpt_prompt}
+    ]
+
+    return await ask_gpt(messages)
+
+# =========================
+# Генерация промта изображения
+# =========================
+
+async def get_image_prompt(digest_text: str) -> str:
+
+    sys_prompt = (
+        "You are creating prompts for image generation AIs in English. "
+        "Base your prompt on the news article below. Come up with a short scene description or illustration idea (1-2 sentences), "
+        "do not use names of real game characters: only general descriptions (for example, 'a young knight in green costume'). "
+        "Keep only English names of games and companies. Do not include names, brands, logos, interfaces or text elements."
     )
 
-    return response.choices[0].message.content.strip()
+    user_prompt = f"News:\n{digest_text[:600]}"
+
+    messages = [
+        {"role": "system", "content": sys_prompt},
+        {"role": "user", "content": user_prompt}
+    ]
+
+    first_prompt = await ask_gpt(messages)
+
+    final_prompt = (
+        "The character from image.png (a pixel art character with short brown hair, black square glasses, "
+        "a white T-shirt with a black spiral symbol, red and orange checkered suspenders, blue jeans with a brown belt, and brown shoes) "
+        f"is present in the scene. {first_prompt} The character is visibly interacting with the main elements of the scene or other characters; "
+        "make their interaction clear and meaningful (for example, talking, working together, or sharing an activity)."
+    )
+
+    return final_prompt.strip()
+
+# =========================
+# Генерация изображения
+# =========================
 
 async def generate_image(digest_text):
 
-    img_prompt = get_image_prompt(digest_text)
+    img_prompt = await get_image_prompt(digest_text)
 
     response = await openai_client.images.generate(
         model="gpt-image-1",
@@ -136,36 +174,6 @@ async def generate_image(digest_text):
 
     image_base64 = response.data[0].b64_json
     return base64.b64decode(image_base64)
-
-# =========================
-# Генерация промта для изображения
-# =========================
-
-def get_image_prompt(news: Dict) -> str:
-    sys_prompt = (
-        "You are creating prompts for image generation AIs in English. "
-        "Base your prompt on the news article below. Come up with a short scene description or illustration idea (1-2 sentences), "
-        "do not use names of real game characters: only general descriptions (for example, 'a young knight in green costume'). "
-        "Keep only English names of games and companies. Do not include names, brands, logos, interfaces or text elements."
-    )
-    user_prompt = (
-        f"News:\n{news['title']}\n{news['full_text'][:600]}\n"
-    )
-    messages = [
-        {"role": "system", "content": sys_prompt},
-        {"role": "user", "content": user_prompt}
-    ]
-    first_prompt = await ask_gpt(messages)
-    if not first_prompt:
-        return "Prompt could not be generated."
-    first_prompt = first_prompt.strip()
-    final_prompt = (
-        "The character from image.png (a pixel art character with short brown hair, black square glasses, "
-        "a white T-shirt with a black spiral symbol, red and orange checkered suspenders, blue jeans with a brown belt, and brown shoes) "
-        f"is present in the scene. {first_prompt} The character is visibly interacting with the main elements of the scene or other characters; "
-        "make their interaction clear and meaningful (for example, talking, working together, or sharing an activity)."
-    )
-    return final_prompt.strip()
 
 # =========================
 # Парсинг
