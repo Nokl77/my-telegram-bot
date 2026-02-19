@@ -26,7 +26,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 TARGET_CHAT_ID = os.getenv("TARGET_CHAT_ID")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
-CHECK_INTERVAL = 60 * 10
+CHECK_INTERVAL = 60 * 2
 TOTAL_PER_CYCLE = 24
 
 if not BOT_TOKEN or not TARGET_CHAT_ID:
@@ -127,9 +127,24 @@ async def generate_digest(news_items):
     )
 
     messages = [
-        {"role": "system", "content": "You are a professional tech news editor."},
-        {"role": "user", "content": formatted}
-    ]
+    {
+        "role": "system",
+        "content": (
+            "You are a professional editor who writes concise, factual news digests about gaming and IT. "
+            "The entire output must be in Russian (no English sentences), except that names of games and companies must remain in English. "
+            "Write a digest based only on the provided list of articles.\n\n"
+            "Formatting rules:\n"
+            "- Output multiple news items.\n"
+            "- Each news item must be at least 250 characters.\n"
+            "- Separate news items with ONE blank line.\n"
+            "- Do NOT use numbering or bullet lists.\n"
+            "- Do NOT include subjective opinions.\n"
+            "- Each news item MUST start with a relevant sticker (use a single emoji) that matches the content (e.g., 🎮 for games, 🧠 for AI, 🖥️ for hardware, 🔒 for security, 🚀 for launches, 💾 for software, 🕹️ for game updates, etc.).\n"
+            "- Keep the sticker as the very first character of the news item.\n"
+        )
+    },
+    {"role": "user", "content": formatted}
+]
 
     return await ask_gpt(messages)
 
@@ -287,3 +302,4 @@ if __name__ == "__main__":
         asyncio.run(main())
     except Exception:
         logger.exception("Bot crashed at top level")
+
