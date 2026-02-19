@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 import base64
+from io import BytesIO
 from dataclasses import dataclass
 from typing import Callable, Set, List, Tuple
 
@@ -29,22 +30,24 @@ logger = logging.getLogger(__name__)
 
 load_dotenv()
 
-BOT_TOKEN: str = os.getenv("BOT_TOKEN", "")
-TARGET_CHAT_ID: str = os.getenv("TARGET_CHAT_ID", "")
-OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
-OPENAI_ORG: str = os.getenv("OPENAI_ORG", "")
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+TARGET_CHAT_ID = os.getenv("TARGET_CHAT_ID")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
-CHECK_INTERVAL_SECONDS: int = 120
+CHECK_INTERVAL = 60 * 2
 TOTAL_PER_CYCLE = 8
+
+if not BOT_TOKEN or not TARGET_CHAT_ID:
+    raise RuntimeError("BOT_TOKEN или TARGET_CHAT_ID не заданы")
+
+if not OPENAI_API_KEY:
+    raise RuntimeError("OPENAI_API_KEY не задан")
 
 # =========================
 # OpenAI клиент
 # =========================
 
-openai_client = AsyncOpenAI(
-    api_key=OPENAI_API_KEY,
-    organization=OPENAI_ORG if OPENAI_ORG else None,
-)
+openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
 
 # =========================
 # Модель источника
@@ -60,7 +63,7 @@ class NewsSource:
 # Парсеры
 # =========================
 
-def parse_destructoid(soup: BeautifulSoup):
+def parse_destructoid(soup):
     result = []
     for a in soup.select("a.title"):
         title = a.get_text(strip=True)
@@ -72,7 +75,7 @@ def parse_destructoid(soup: BeautifulSoup):
     return result
 
 
-def parse_pcgamer(soup: BeautifulSoup):
+def parse_pcgamer(soup):
     result = []
     for a in soup.select("a.article-link"):
         title = a.get_text(strip=True)
@@ -82,7 +85,7 @@ def parse_pcgamer(soup: BeautifulSoup):
     return result
 
 
-def parse_rps(soup: BeautifulSoup):
+def parse_rps(soup):
     result = []
     for a in soup.select("a.c-block-link__overlay"):
         title = a.get_text(strip=True)
@@ -92,7 +95,7 @@ def parse_rps(soup: BeautifulSoup):
     return result
 
 
-def parse_nvidia_blog(soup: BeautifulSoup):
+def parse_nvidia_blog(soup):
     result = []
     for a in soup.select("a.blog-card__link"):
         title = a.get_text(strip=True)
@@ -118,18 +121,17 @@ sent_links: Set[str] = set()
 # HTTP
 # =========================
 
-async def fetch_html(session: aiohttp.ClientSession, url: str) -> str:
-    headers = {"User-Agent": "Mozilla/5.0 (compatible; NewsDigestBot/2.0)"}
-    timeout = aiohttp.ClientTimeout(total=30)
-    async with session.get(url, headers=headers, timeout=timeout) as response:
+async def fetch_html(session, url):
+    headers = {"User-Agent": "Mozilla/5.0"}
+    async with session.get(url, headers=headers, timeout=30) as response:
         response.raise_for_status()
         return await response.text()
 
 # =========================
-# Генерация дайджеста
+# GPT: дайджест
 # =========================
 
-async def generate_digest(news_items: List[Tuple[str, str, str]]) -> str:
+async def generate_digest(news_items):
 
     formatted_news = "\n".join(
         f"- [{source}] {title} ({link})"
@@ -138,61 +140,57 @@ async def generate_digest(news_items: List[Tuple[str, str, str]]) -> str:
 
     prompt = f"""
 Ты — редактор игрового новостного канала.
-
 Сделай единый краткий структурированный дайджест.
-Не выдумывай факты.
-Сохрани ссылки.
+Не выдумывай факты. Сохрани ссылки.
 
 Новости:
 {formatted_news}
 """
 
     response = await openai_client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[
-            {"role": "system", "content": "Ты профессиональный игровой редактор."},
-            {"role": "user", "content": prompt},
-        ],
+        model="gpt-3.5-turbo",
+        messages=[{"role": "user", "content": prompt}],
         temperature=0.6,
     )
 
     return response.choices[0].message.content.strip()
 
 # =========================
-# Генерация image prompt (этап 1)
+# GPT: prompt для картинки
 # =========================
 
-async def generate_image_prompt(digest_text: str) -> str:
+async def generate_image_prompt(digest_text):
 
-    base_prompt = (
+    prompt = (
         "You are creating prompts for image generation AIs in English. "
-        "Base your prompt on the news article below. Come up with a short scene description or illustration idea (1-2 sentences), "
-        "do not use names of real game characters: only general descriptions (for example, 'a young knight in green costume'). "
-        "Keep only English names of games and companies. Do not include names, brands, logos, interfaces or text elements.\n\n"
+        "Base your prompt on the news article below. "
+        "Come up with a short scene description (1-2 sentences). "
+        "Do not use names of real characters. "
+        "Keep only English names of games and companies. "
+        "Do not include logos, text or UI.\n\n"
         f"{digest_text}"
     )
 
     response = await openai_client.chat.completions.create(
         model="gpt-4o-mini",
-        messages=[{"role": "user", "content": base_prompt}],
+        messages=[{"role": "user", "content": prompt}],
         temperature=0.7,
     )
 
     return response.choices[0].message.content.strip()
 
 # =========================
-# Генерация изображения (этап 2)
+# GPT: генерация изображения
 # =========================
 
-async def generate_image(first_prompt: str) -> bytes:
+async def generate_image(scene_prompt):
 
     final_prompt = (
-        "The character from image.png (a pixel art character with short brown hair, black square glasses, "
-        "a white T-shirt with a black spiral symbol, red and orange checkered suspenders, "
-        "blue jeans with a brown belt, and brown shoes) "
-        f"is present in the scene. {first_prompt} "
-        "The character is visibly interacting with the main elements of the scene or other characters; "
-        "make their interaction clear and meaningful (for example, talking, working together, or sharing an activity)."
+        "The character from image.png (a pixel art character with short brown hair, "
+        "black square glasses, white T-shirt with black spiral symbol, "
+        "red and orange checkered suspenders, blue jeans, brown shoes) "
+        f"is present in the scene. {scene_prompt} "
+        "The character clearly interacts with the scene."
     )
 
     result = await openai_client.images.generate(
@@ -202,14 +200,19 @@ async def generate_image(first_prompt: str) -> bytes:
     )
 
     image_base64 = result.data[0].b64_json
-    return base64.b64decode(image_base64)
+    image_bytes = base64.b64decode(image_base64)
+
+    bio = BytesIO(image_bytes)
+    bio.name = "digest.png"
+    bio.seek(0)
+
+    return bio
 
 # =========================
 # Проверка новостей
 # =========================
 
-async def check_news(application: Application) -> None:
-    logger.info("Проверка новостей...")
+async def check_news(application):
 
     collected = []
 
@@ -221,9 +224,8 @@ async def check_news(application: Application) -> None:
                 articles = source.parser(soup)
 
                 for title, link in articles:
-                    if link in sent_links:
-                        continue
-                    collected.append((source.name, title, link))
+                    if link not in sent_links:
+                        collected.append((source.name, title, link))
 
             except Exception as e:
                 logger.error(f"{source.name}: {e}")
@@ -235,16 +237,14 @@ async def check_news(application: Application) -> None:
 
     try:
         digest_text = await generate_digest(selected)
-        first_prompt = await generate_image_prompt(digest_text)
-        image_bytes = await generate_image(first_prompt)
+        scene_prompt = await generate_image_prompt(digest_text)
+        image_file = await generate_image(scene_prompt)
 
-        # отправляем картинку
         await application.bot.send_photo(
             chat_id=TARGET_CHAT_ID,
-            photo=image_bytes,
+            photo=image_file,
         )
 
-        # отправляем текст
         await application.bot.send_message(
             chat_id=TARGET_CHAT_ID,
             text=digest_text,
@@ -261,7 +261,7 @@ async def check_news(application: Application) -> None:
 # Фоновый цикл
 # =========================
 
-async def news_loop(application: Application) -> None:
+async def news_loop(application):
     while True:
         try:
             await check_news(application)
@@ -274,24 +274,13 @@ async def news_loop(application: Application) -> None:
 # Запуск
 # =========================
 
-def main() -> None:
-    if not BOT_TOKEN or not TARGET_CHAT_ID:
-        raise RuntimeError("BOT_TOKEN или TARGET_CHAT_ID не заданы")
-
-    if not OPENAI_API_KEY:
-        raise RuntimeError("OPENAI_API_KEY не задан")
-
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-
+def main():
     application = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    async def startup(app: Application) -> None:
+    async def startup(app):
         asyncio.create_task(news_loop(app))
 
     application.post_init = startup
-
-    logger.info("Бот запущен.")
     application.run_polling()
 
 if __name__ == "__main__":
