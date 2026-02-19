@@ -23,6 +23,7 @@ TARGET_CHAT_ID = os.getenv("TARGET_CHAT_ID")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 CHECK_INTERVAL = 60 * 10
+TOTAL_PER_CYCLE = 24
 
 if not BOT_TOKEN or not TARGET_CHAT_ID:
     raise RuntimeError("BOT_TOKEN или TARGET_CHAT_ID не заданы")
@@ -225,4 +226,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
