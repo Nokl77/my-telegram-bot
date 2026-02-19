@@ -126,25 +126,17 @@ async def generate_digest(news_items):
         for src, title, link in news_items
     )
 
-    messages = [
-    {
-        "role": "system",
-        "content": (
-            "You are a professional editor who writes concise, factual news digests about gaming and IT. "
-            "The entire output must be in Russian (no English sentences), except that names of games and companies must remain in English. "
-            "Write a digest based only on the provided list of articles.\n\n"
-            "Formatting rules:\n"
-            "- Output multiple news items.\n"
-            "- Each news item must be at least 250 characters.\n"
-            "- Separate news items with ONE blank line.\n"
-            "- Do NOT use numbering or bullet lists.\n"
-            "- Do NOT include subjective opinions.\n"
-            "- Each news item MUST start with a relevant sticker (use a single emoji) that matches the content (e.g., 🎮 for games, 🧠 for AI, 🖥️ for hardware, 🔒 for security, 🚀 for launches, 💾 for software, 🕹️ for game updates, etc.).\n"
-            "- Keep the sticker as the very first character of the news item.\n"
-        )
-    },
-    {"role": "user", "content": formatted}
-]
+    chatgpt_prompt = (
+        "Составь дайджест новостей игрового и IT-миров, обязательно на русском языке. "
+        "Каждая новость должна быть не менее 250 символов. "
+        "Новости должны разделяться пустой строкой. "
+        "В начале каждой новости должен быть подходящий по тематике стикер (один эмодзи, соответствующий содержанию, "
+        "например 🎮 для игр, 🧠 для ИИ, 🖥️ для железа, 🔒 для безопасности, 🚀 для запусков, 💾 для ПО, 🕹️ для обновлений). "
+        "Названия игр и компаний пишутся только на английском. "
+        "Без нумерации, без субъективных оценок.\n\n"
+        f"{formatted}"
+    ),
+    ]
 
     return await ask_gpt(messages)
 
@@ -302,4 +294,5 @@ if __name__ == "__main__":
         asyncio.run(main())
     except Exception:
         logger.exception("Bot crashed at top level")
+
 
