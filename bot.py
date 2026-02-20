@@ -1,185 +1,259 @@
 import asyncio
 import logging
+import os
+import base64
+from dataclasses import dataclass
+from typing import Callable, Set, List, Tuple
 import aiohttp
 from bs4 import BeautifulSoup
+from dotenv import load_dotenv
 from openai import AsyncOpenAI
-from aiogram import Bot
-import traceback
-import sys
-import os
-import signal
 
-print("PYTHON PROCESS STARTED", flush=True)
+# =========================
+# Настройки
+# =========================
 
-# ================= CONFIG =================
-
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-CHANNEL_ID = os.getenv("CHANNEL_ID")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-
-CHECK_INTERVAL = 120
-
-# ================= LOGGING =================
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(message)s",
-    stream=sys.stdout,
-    force=True
-)
-
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ================= VALIDATION =================
+load_dotenv()
 
-if not BOT_TOKEN:
-    logger.critical("BOT_TOKEN not set")
-    sys.exit(1)
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+TARGET_CHAT_ID = os.getenv("TARGET_CHAT_ID")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
-if not CHANNEL_ID:
-    logger.critical("CHANNEL_ID not set")
-    sys.exit(1)
+CHECK_INTERVAL = 60 * 10
+TOTAL_PER_CYCLE = 24
+
+if not BOT_TOKEN or not TARGET_CHAT_ID:
+    raise RuntimeError("BOT_TOKEN или TARGET_CHAT_ID не заданы")
 
 if not OPENAI_API_KEY:
-    logger.critical("OPENAI_API_KEY not set")
-    sys.exit(1)
+    raise RuntimeError("OPENAI_API_KEY не задан")
 
-# ================= SOURCES =================
+TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
+openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
 
-SOURCES = {
-    "Cointelegraph": {
-        "url": "https://cointelegraph.com/",
-        "selector": "a.post-card-inline__title-link"
-    },
-    "Decrypt": {
-        "url": "https://decrypt.co/",
-        "selector": "a.heading"
-    }
-}
+# =========================
+# Источники
+# =========================
 
-# ================= SIGNAL HANDLING =================
+@dataclass(slots=True)
+class NewsSource:
+    name: str
+    url: str
+    parser: Callable[[BeautifulSoup], List[Tuple[str, str]]]
 
-def handle_shutdown(signum, frame):
-    logger.error(f"Shutdown signal received: {signum}")
-    sys.exit(1)
+def parse_generic(soup, selector, base=""):
+    result = []
+    for a in soup.select(selector):
+        title = a.get_text(strip=True)
+        link = a.get("href")
+        if title and link:
+            if link.startswith("/") and base:
+                link = base + link
+            result.append((title, link))
+    return result
 
-signal.signal(signal.SIGTERM, handle_shutdown)
-signal.signal(signal.SIGINT, handle_shutdown)
+SOURCES = [
+    NewsSource("Destructoid", "https://www.destructoid.com/news/",
+               lambda s: parse_generic(s, "a.title", "https://www.destructoid.com")),
+    NewsSource("PC Gamer", "https://www.pcgamer.com/news/",
+               lambda s: parse_generic(s, "a.article-link")),
+    NewsSource("Rock Paper Shotgun", "https://www.rockpapershotgun.com/news/",
+               lambda s: parse_generic(s, "a.c-block-link__overlay")),
+    NewsSource("NVIDIA Blog", "https://blogs.nvidia.com/",
+               lambda s: parse_generic(s, "a.blog-card__link")),
+]
 
-# ================= PARSING =================
+sent_links: Set[str] = set()
 
-async def parse_sources(session, sent_links):
-    collected = []
+# =========================
+# Telegram
+# =========================
 
-    for name, config in SOURCES.items():
-        try:
-            logger.info(f"Parsing {name}")
+async def send_photo_with_caption(session, image_bytes, caption_text):
+    data = aiohttp.FormData()
+    data.add_field("chat_id", TARGET_CHAT_ID)
+    data.add_field("photo", image_bytes,
+                   filename="digest.png",
+                   content_type="image/png")
+    data.add_field("caption", caption_text)
+    data.add_field("parse_mode", "Markdown")
 
-            async with session.get(config["url"], timeout=30) as response:
-                logger.info(f"{name} status: {response.status}")
+    async with session.post(f"{TELEGRAM_API}/sendPhoto", data=data) as r:
+        await r.text()
 
-                if response.status != 200:
-                    continue
+# =========================
+# OpenAI helper
+# =========================
 
-                html = await response.text()
-                soup = BeautifulSoup(html, "html.parser")
+async def ask_gpt(messages, temperature=0.6):
+    response = await openai_client.chat.completions.create(
+        model="gpt-3.5-turbo",
+        messages=messages,
+        temperature=temperature,
+    )
+    return response.choices[0].message.content.strip()
 
-                links = soup.select(config["selector"])
-                logger.info(f"{name}: {len(links)} links found")
+# =========================
+# Семантический фильтр дублей
+# =========================
 
-                for link in links[:10]:
-                    href = link.get("href")
-                    title = link.get_text(strip=True)
+async def filter_semantic_duplicates(news_items):
 
-                    if not href or not title:
-                        continue
+    if len(news_items) <= 1:
+        return news_items
 
-                    if href.startswith("/"):
-                        href = config["url"].rstrip("/") + href
-
-                    if href not in sent_links:
-                        collected.append({
-                            "title": title,
-                            "url": href,
-                            "source": name
-                        })
-
-        except Exception:
-            logger.error(traceback.format_exc())
-
-    logger.info(f"Collected {len(collected)} new articles")
-    return collected
-
-# ================= GENERATION =================
-
-async def generate_post(client, news_items):
-    combined = "\n\n".join(
-        f"{n['title']} ({n['source']})"
-        for n in news_items
+    formatted = "\n".join(
+        f"{i+1}. [{src}] {title} ({link})"
+        for i, (src, title, link) in enumerate(news_items)
     )
 
-    prompt = f"""
-Rewrite these crypto headlines into one concise Telegram post.
-Avoid repetition.
+    system_prompt = (
+        "Ты редактор новостей. Удали новости, которые повторяют друг друга по смыслу. "
+        "Если две новости описывают одно и то же событие, оставь только одну — самую информативную. "
+        "Верни номера новостей, которые нужно оставить, через запятую. Только числа."
+    )
 
-News:
-{combined}
-"""
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": formatted}
+    ]
+
+    response = await ask_gpt(messages, temperature=0)
 
     try:
-        response = await client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.7
-        )
+        keep_indexes = [
+            int(x.strip()) - 1
+            for x in response.split(",")
+            if x.strip().isdigit()
+        ]
+        filtered = [news_items[i] for i in keep_indexes if 0 <= i < len(news_items)]
+        return filtered if filtered else news_items
+    except:
+        return news_items
 
-        return response.choices[0].message.content
+# =========================
+# Генерация дайджеста
+# =========================
 
-    except Exception:
-        logger.error(traceback.format_exc())
-        return None
+async def generate_digest(news_items):
 
-# ================= MAIN LOOP =================
+    formatted = "\n".join(
+        f"- [{src}] {title} ({link})"
+        for src, title, link in news_items
+    )
+
+    chatgpt_prompt = (
+        "Составь дайджест новостей игрового и IT-миров обязательно на русском языке. "
+        "Для каждой новости отдельный абзац. Названия игр и компаний только на английском. "
+        "Не используй нумерацию. Без субъективных оценок. "
+        "Название каждой игры или компании выделяй жирным.\n\n"
+        f"{formatted}"
+    )
+
+    messages = [
+        {"role": "system", "content": "Ты профессиональный редактор гейм- и IT-дайджестов."},
+        {"role": "user", "content": chatgpt_prompt}
+    ]
+
+    return await ask_gpt(messages)
+
+# =========================
+# Генерация промта изображения
+# =========================
+
+async def get_image_prompt(digest_text: str) -> str:
+
+    sys_prompt = (
+        "You create prompts for image generation AIs in English. "
+        "Based on the news below, describe a short illustration idea (1-2 sentences). "
+        "Do not use names of real characters. No brands, logos, text elements."
+    )
+
+    messages = [
+        {"role": "system", "content": sys_prompt},
+        {"role": "user", "content": digest_text[:600]}
+    ]
+
+    base_prompt = await ask_gpt(messages)
+
+    final_prompt = (
+        "The pixel art character with short brown hair, black square glasses, "
+        "white T-shirt with a spiral symbol, red-orange suspenders, blue jeans, "
+        "brown belt and shoes is in the scene. "
+        f"{base_prompt} The character actively interacts with the environment."
+    )
+
+    return final_prompt.strip()
+
+# =========================
+# Генерация изображения
+# =========================
+
+async def generate_image(digest_text):
+
+    img_prompt = await get_image_prompt(digest_text)
+
+    response = await openai_client.images.generate(
+        model="gpt-image-1",
+        prompt=img_prompt,
+        size="1024x1024",
+    )
+
+    image_base64 = response.data[0].b64_json
+    return base64.b64decode(image_base64)
+
+# =========================
+# Парсинг
+# =========================
+
+async def fetch_html(session, url):
+    async with session.get(url, headers={"User-Agent": "Mozilla/5.0"}) as r:
+        return await r.text()
+
+# =========================
+# Главный цикл
+# =========================
 
 async def main():
-    logger.info("Bot starting main loop")
 
-    bot = Bot(token=BOT_TOKEN)
-    client = AsyncOpenAI(api_key=OPENAI_API_KEY)
+    while True:
+        try:
+            collected = []
 
-    sent_links = set()
+            async with aiohttp.ClientSession() as session:
 
-    async with aiohttp.ClientSession() as session:
-        while True:
-            try:
-                news = await parse_sources(session, sent_links)
+                for source in SOURCES:
+                    try:
+                        html = await fetch_html(session, source.url)
+                        soup = BeautifulSoup(html, "html.parser")
+                        articles = source.parser(soup)
 
-                if news:
-                    post = await generate_post(client, news)
+                        for title, link in articles:
+                            if link not in sent_links:
+                                collected.append((source.name, title, link))
+                    except Exception as e:
+                        logger.error(f"{source.name} error: {e}")
 
-                    if post:
-                        await bot.send_message(CHANNEL_ID, post)
-                        logger.info("Post sent")
+                if collected:
+                    selected = collected[:TOTAL_PER_CYCLE]
+                    selected = await filter_semantic_duplicates(selected)
 
-                        for item in news:
-                            sent_links.add(item["url"])
-                    else:
-                        logger.error("Post generation failed")
+                    if selected:
+                        digest = await generate_digest(selected)
+                        image = await generate_image(digest)
 
-                else:
-                    logger.info("No new articles")
+                        await send_photo_with_caption(session, image, digest)
 
-            except Exception:
-                logger.error("Unhandled error in main loop")
-                logger.error(traceback.format_exc())
+                        for _, _, link in selected:
+                            sent_links.add(link)
 
-            await asyncio.sleep(CHECK_INTERVAL)
+        except Exception as e:
+            logger.error(f"Main loop error: {e}")
 
-# ================= ENTRY =================
+        await asyncio.sleep(CHECK_INTERVAL)
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except Exception:
-        logger.critical("Fatal crash")
-        logger.critical(traceback.format_exc())
+    asyncio.run(main())
