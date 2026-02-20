@@ -6,8 +6,9 @@ from dataclasses import dataclass
 from typing import Callable, Set, List, Tuple
 import aiohttp
 from bs4 import BeautifulSoup
-from dotenv import load_dotenv
 from openai import AsyncOpenAI
+
+print("=== PROCESS STARTED ===", flush=True)
 
 # =========================
 # Настройки
@@ -16,13 +17,17 @@ from openai import AsyncOpenAI
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-load_dotenv()
+logger.info("Logger initialized")
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 TARGET_CHAT_ID = os.getenv("TARGET_CHAT_ID")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
-CHECK_INTERVAL = 60 * 10
+logger.info(f"BOT_TOKEN present: {bool(BOT_TOKEN)}")
+logger.info(f"TARGET_CHAT_ID present: {bool(TARGET_CHAT_ID)}")
+logger.info(f"OPENAI_API_KEY present: {bool(OPENAI_API_KEY)}")
+
+CHECK_INTERVAL = 60 * 2
 TOTAL_PER_CYCLE = 24
 
 if not BOT_TOKEN or not TARGET_CHAT_ID:
@@ -218,10 +223,11 @@ async def fetch_html(session, url):
 # =========================
 
 async def main():
+    logger.info("=== BOT STARTED ===")
+    logger.info("Entering main loop")
 
     while True:
-        try:
-            collected = []
+        logger.info("New cycle started")
 
             async with aiohttp.ClientSession() as session:
 
@@ -234,6 +240,10 @@ async def main():
                         for title, link in articles:
                             if link not in sent_links:
                                 collected.append((source.name, title, link))
+
+                        if not collected:
+                            logger.info("No new articles found this cycle")
+    
                     except Exception as e:
                         logger.error(f"{source.name} error: {e}")
 
@@ -257,3 +267,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
