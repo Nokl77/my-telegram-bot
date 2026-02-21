@@ -228,6 +228,8 @@ async def main():
 
     while True:
         logger.info("New cycle started")
+        try:
+            collected = []
 
             async with aiohttp.ClientSession() as session:
 
@@ -243,7 +245,7 @@ async def main():
 
                         if not collected:
                             logger.info("No new articles found this cycle")
-    
+
                     except Exception as e:
                         logger.error(f"{source.name} error: {e}")
 
@@ -267,4 +269,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
