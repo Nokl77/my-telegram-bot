@@ -27,7 +27,7 @@ logger.info(f"BOT_TOKEN present: {bool(BOT_TOKEN)}")
 logger.info(f"TARGET_CHAT_ID present: {bool(TARGET_CHAT_ID)}")
 logger.info(f"OPENAI_API_KEY present: {bool(OPENAI_API_KEY)}")
 
-CHECK_INTERVAL = 60 * 2
+CHECK_INTERVAL = 60 * 240
 TOTAL_PER_CYCLE = 5
 
 if not BOT_TOKEN or not TARGET_CHAT_ID:
@@ -270,6 +270,7 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
 
 
 
