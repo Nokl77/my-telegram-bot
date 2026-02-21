@@ -28,7 +28,7 @@ logger.info(f"TARGET_CHAT_ID present: {bool(TARGET_CHAT_ID)}")
 logger.info(f"OPENAI_API_KEY present: {bool(OPENAI_API_KEY)}")
 
 CHECK_INTERVAL = 60 * 2
-TOTAL_PER_CYCLE = 24
+TOTAL_PER_CYCLE = 5
 
 if not BOT_TOKEN or not TARGET_CHAT_ID:
     raise RuntimeError("BOT_TOKEN или TARGET_CHAT_ID не заданы")
@@ -154,7 +154,8 @@ async def generate_digest(news_items):
         "Составь дайджест новостей игрового и IT-миров обязательно на русском языке. "
         "Для каждой новости отдельный абзац. Названия игр и компаний только на английском. "
         "Не используй нумерацию. Без субъективных оценок. "
-        "Название каждой игры или компании выделяй жирным.\n\n"
+        "Название каждой игры или компании выделяй жирным. "
+        "Каждый абзац о новости должен содержать не менее 250 символов.\n\n"
         f"{formatted}"
     )
 
@@ -269,3 +270,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
