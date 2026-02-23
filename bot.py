@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 import base64
+import re
 from dataclasses import dataclass
 from typing import Callable, Set, List, Tuple
 import aiohttp
@@ -85,6 +86,7 @@ async def send_photo_with_caption(session, image_bytes, caption_text):
                    content_type="image/png")
     data.add_field("caption", caption_text)
     data.add_field("parse_mode", "Markdown")
+    data.add_field("disable_web_page_preview", "true")
 
     async with session.post(f"{TELEGRAM_API}/sendPhoto", data=data) as r:
         await r.text()
@@ -100,6 +102,29 @@ async def ask_gpt(messages, temperature=0.6):
         temperature=temperature,
     )
     return response.choices[0].message.content.strip()
+
+# =========================
+# Форматирование жирных заголовков
+# =========================
+
+def enforce_bold_titles(text: str) -> str:
+    paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
+    formatted_paragraphs = []
+
+    for paragraph in paragraphs:
+        lines = paragraph.split("\n")
+        first_line = lines[0].strip()
+
+        if not first_line.startswith("**"):
+            first_line = f"**{first_line.strip('* ')}**"
+
+        rest = "\n".join(lines[1:])
+        if rest:
+            formatted_paragraphs.append(f"{first_line}\n{rest}")
+        else:
+            formatted_paragraphs.append(first_line)
+
+    return "\n\n".join(formatted_paragraphs)
 
 # =========================
 # Семантический фильтр дублей
@@ -155,9 +180,9 @@ async def generate_digest(news_items):
         "Для каждой новости отдельный абзац. Перед каждой новостью делай пустую строку. "
         "Не используй нумерацию. Без субъективных оценок. "
         "Для каждой новости внутри дайджеста придумай название. "
-        "Печатай это название в начале абзаца и выделяй название жирным шрифтом. "
+        "Печатай это название в начале абзаца. "
         "Не делай ссылки на исходные материалы. Сразу удаляй такие ссылки из дайджеста. "
-        "Каждый дайджест завершай словами &quot;Всегда свежие новости из мира компьютерных игр на канале https://t.me/wewaprochanel&quot в конце поста."
+        "Каждый дайджест завершай словами \"Всегда свежие новости из мира компьютерных игр на канале https://t.me/wewaprochanel\" в конце поста. "
         "Каждый абзац о новости должен содержать не менее 250 символов.\n\n"
         f"{formatted}"
     )
@@ -167,7 +192,8 @@ async def generate_digest(news_items):
         {"role": "user", "content": chatgpt_prompt}
     ]
 
-    return await ask_gpt(messages)
+    raw_text = await ask_gpt(messages)
+    return enforce_bold_titles(raw_text)
 
 # =========================
 # Генерация промта изображения
@@ -273,13 +299,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
-
-
-
-
-
-
-
-
-
