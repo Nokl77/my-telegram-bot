@@ -22,7 +22,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 TARGET_CHAT_ID = os.getenv("TARGET_CHAT_ID")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
-CHECK_INTERVAL = 60 * 2
+CHECK_INTERVAL = 60 * 20
 TOTAL_PER_CYCLE = 5
 
 if not BOT_TOKEN or not TARGET_CHAT_ID:
@@ -254,3 +254,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
