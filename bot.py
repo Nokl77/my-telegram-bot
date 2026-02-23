@@ -2,7 +2,6 @@ import asyncio
 import logging
 import os
 import base64
-import html
 from dataclasses import dataclass
 from typing import Callable, Set, List, Tuple
 import aiohttp
@@ -18,11 +17,17 @@ print("=== PROCESS STARTED ===", flush=True)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+logger.info("Logger initialized")
+
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 TARGET_CHAT_ID = os.getenv("TARGET_CHAT_ID")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
-CHECK_INTERVAL = 60 * 20
+logger.info(f"BOT_TOKEN present: {bool(BOT_TOKEN)}")
+logger.info(f"TARGET_CHAT_ID present: {bool(TARGET_CHAT_ID)}")
+logger.info(f"OPENAI_API_KEY present: {bool(OPENAI_API_KEY)}")
+
+CHECK_INTERVAL = 60 * 2
 TOTAL_PER_CYCLE = 5
 
 if not BOT_TOKEN or not TARGET_CHAT_ID:
@@ -79,7 +84,6 @@ async def send_photo_with_caption(session, image_bytes, caption_text):
                    filename="digest.png",
                    content_type="image/png")
     data.add_field("caption", caption_text)
-    data.add_field("parse_mode", "HTML")
     data.add_field("disable_web_page_preview", "true")
 
     async with session.post(f"{TELEGRAM_API}/sendPhoto", data=data) as r:
@@ -98,24 +102,24 @@ async def ask_gpt(messages, temperature=0.6):
     return response.choices[0].message.content.strip()
 
 # =========================
-# Принудительное форматирование заголовков
+# Декоративное выделение заголовков
 # =========================
 
-def enforce_bold_titles(text: str) -> str:
+def decorate_titles(text: str) -> str:
     paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
     formatted_paragraphs = []
 
     for paragraph in paragraphs:
         lines = paragraph.split("\n")
-        first_line = html.escape(lines[0].strip())
-        bold_title = f"<b>{first_line}</b>"
+        first_line = lines[0].strip()
 
-        rest = "\n".join(html.escape(line) for line in lines[1:])
+        decorated_title = f"✨🎮 {first_line} 🎮✨"
 
+        rest = "\n".join(lines[1:])
         if rest:
-            formatted_paragraphs.append(f"{bold_title}\n{rest}")
+            formatted_paragraphs.append(f"{decorated_title}\n{rest}")
         else:
-            formatted_paragraphs.append(bold_title)
+            formatted_paragraphs.append(decorated_title)
 
     return "\n\n".join(formatted_paragraphs)
 
@@ -184,7 +188,35 @@ async def generate_digest(news_items):
     ]
 
     raw_text = await ask_gpt(messages)
-    return enforce_bold_titles(raw_text)
+    return decorate_titles(raw_text)
+
+# =========================
+# Генерация промта изображения
+# =========================
+
+async def get_image_prompt(digest_text: str) -> str:
+
+    sys_prompt = (
+        "You create prompts for image generation AIs in English. "
+        "Based on the news below, describe a short illustration idea (1-2 sentences). "
+        "Do not use names of real characters. No brands, logos, text elements."
+    )
+
+    messages = [
+        {"role": "system", "content": sys_prompt},
+        {"role": "user", "content": digest_text[:600]}
+    ]
+
+    base_prompt = await ask_gpt(messages)
+
+    final_prompt = (
+        "The pixel art character with short brown hair, black square glasses, "
+        "white T-shirt with a spiral symbol, red-orange suspenders, blue jeans, "
+        "brown belt and shoes is in the scene. "
+        f"{base_prompt} The character actively interacts with the environment."
+    )
+
+    return final_prompt.strip()
 
 # =========================
 # Генерация изображения
@@ -192,9 +224,11 @@ async def generate_digest(news_items):
 
 async def generate_image(digest_text):
 
+    img_prompt = await get_image_prompt(digest_text)
+
     response = await openai_client.images.generate(
         model="gpt-image-1",
-        prompt="Pixel art illustration inspired by tech and gaming news",
+        prompt=img_prompt,
         size="1024x1024",
     )
 
@@ -214,8 +248,11 @@ async def fetch_html(session, url):
 # =========================
 
 async def main():
+    logger.info("=== BOT STARTED ===")
+    logger.info("Entering main loop")
 
     while True:
+        logger.info("New cycle started")
         try:
             collected = []
 
@@ -223,8 +260,8 @@ async def main():
 
                 for source in SOURCES:
                     try:
-                        html_data = await fetch_html(session, source.url)
-                        soup = BeautifulSoup(html_data, "html.parser")
+                        html = await fetch_html(session, source.url)
+                        soup = BeautifulSoup(html, "html.parser")
                         articles = source.parser(soup)
 
                         for title, link in articles:
@@ -254,4 +291,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
