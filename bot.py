@@ -84,7 +84,6 @@ async def send_photo_with_caption(session, image_bytes, caption_text):
                    filename="digest.png",
                    content_type="image/png")
     data.add_field("caption", caption_text)
-    data.add_field("parse_mode", "HTML")
     data.add_field("disable_web_page_preview", "true")
 
     async with session.post(f"{TELEGRAM_API}/sendPhoto", data=data) as r:
@@ -103,7 +102,7 @@ async def ask_gpt(messages, temperature=0.6):
     return response.choices[0].message.content.strip()
 
 # =========================
-# Форматирование заголовков
+# Декоративное выделение только заголовков
 # =========================
 
 def decorate_titles(text: str) -> str:
@@ -114,12 +113,13 @@ def decorate_titles(text: str) -> str:
         lines = paragraph.split("\n")
         first_line = lines[0].strip()
 
+        # Выделяем только строки < 50 символов
         if len(first_line) <= 50:
-            decorated_title = f"<b>{first_line}</b>"
+            decorated_title = f"✨🎮 {first_line} 🎮✨"
         else:
             decorated_title = first_line
 
-        rest = "\n".join(lines[1:]).strip()
+        rest = "\n".join(lines[1:])
 
         if rest:
             formatted_paragraphs.append(f"{decorated_title}\n{rest}")
@@ -183,7 +183,7 @@ async def generate_digest(news_items):
         "Не используй нумерацию. Без субъективных оценок. "
         "Не делай ссылки на исходные материалы. "
         "Для каждой новости внутри дайджеста придумай название в первой строке абзаца не более 50 символов. "
-        "Каждый текст о новости должен содержать не менее 250 символов.\n\n"
+        "Каждый текст о новости должен содержать не менее 250 символов (не путай этот текст с названием).\n\n"
         f"{formatted}"
     )
 
