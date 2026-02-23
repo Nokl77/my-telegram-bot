@@ -27,7 +27,7 @@ logger.info(f"BOT_TOKEN present: {bool(BOT_TOKEN)}")
 logger.info(f"TARGET_CHAT_ID present: {bool(TARGET_CHAT_ID)}")
 logger.info(f"OPENAI_API_KEY present: {bool(OPENAI_API_KEY)}")
 
-CHECK_INTERVAL = 60 * 240
+CHECK_INTERVAL = 60 * 2
 TOTAL_PER_CYCLE = 5
 
 if not BOT_TOKEN or not TARGET_CHAT_ID:
@@ -113,21 +113,20 @@ def decorate_titles(text: str) -> str:
         lines = paragraph.split("\n")
         first_line = lines[0].strip()
 
-        # Добавляем эмодзи только если длина заголовка <=50 символов
-        if len(first_line) <= 50:
-            # Здесь можно использовать эмодзи напрямую в строке Unicode
-            decorated_title = f"✨🎮 {first_line} 🎮✨"
+        # Очищаем от лидирующих символов
+        clean_title = first_line.lstrip("-[]0123456789. ").strip()
+
+        if len(clean_title) <= 50:
+            decorated_title = f"✨🎮 {clean_title} 🎮✨"
         else:
             decorated_title = first_line
 
         rest = "\n".join(lines[1:]).strip()
-
         if rest:
             formatted_paragraphs.append(f"{decorated_title}\n{rest}")
         else:
             formatted_paragraphs.append(decorated_title)
 
-    # Добавляем двойной перенос строк между абзацами
     return "\n\n".join(formatted_paragraphs)
 
 # =========================
@@ -299,6 +298,7 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
 
 
 
