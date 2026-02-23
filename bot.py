@@ -113,19 +113,21 @@ def decorate_titles(text: str) -> str:
         lines = paragraph.split("\n")
         first_line = lines[0].strip()
 
-        # Выделяем только строки < 50 символов
+        # Добавляем эмодзи только если длина заголовка <=50 символов
         if len(first_line) <= 50:
+            # Здесь можно использовать эмодзи напрямую в строке Unicode
             decorated_title = f"✨🎮 {first_line} 🎮✨"
         else:
             decorated_title = first_line
 
-        rest = "\n".join(lines[1:])
+        rest = "\n".join(lines[1:]).strip()
 
         if rest:
             formatted_paragraphs.append(f"{decorated_title}\n{rest}")
         else:
             formatted_paragraphs.append(decorated_title)
 
+    # Добавляем двойной перенос строк между абзацами
     return "\n\n".join(formatted_paragraphs)
 
 # =========================
@@ -296,3 +298,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
