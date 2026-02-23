@@ -2,7 +2,7 @@ import asyncio
 import logging
 import os
 import base64
-import re
+import html
 from dataclasses import dataclass
 from typing import Callable, Set, List, Tuple
 import aiohttp
@@ -18,15 +18,9 @@ print("=== PROCESS STARTED ===", flush=True)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-logger.info("Logger initialized")
-
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 TARGET_CHAT_ID = os.getenv("TARGET_CHAT_ID")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-
-logger.info(f"BOT_TOKEN present: {bool(BOT_TOKEN)}")
-logger.info(f"TARGET_CHAT_ID present: {bool(TARGET_CHAT_ID)}")
-logger.info(f"OPENAI_API_KEY present: {bool(OPENAI_API_KEY)}")
 
 CHECK_INTERVAL = 60 * 2
 TOTAL_PER_CYCLE = 5
@@ -85,7 +79,7 @@ async def send_photo_with_caption(session, image_bytes, caption_text):
                    filename="digest.png",
                    content_type="image/png")
     data.add_field("caption", caption_text)
-    data.add_field("parse_mode", "Markdown")
+    data.add_field("parse_mode", "HTML")
     data.add_field("disable_web_page_preview", "true")
 
     async with session.post(f"{TELEGRAM_API}/sendPhoto", data=data) as r:
@@ -104,7 +98,7 @@ async def ask_gpt(messages, temperature=0.6):
     return response.choices[0].message.content.strip()
 
 # =========================
-# Форматирование жирных заголовков
+# Принудительное форматирование заголовков
 # =========================
 
 def enforce_bold_titles(text: str) -> str:
@@ -113,16 +107,15 @@ def enforce_bold_titles(text: str) -> str:
 
     for paragraph in paragraphs:
         lines = paragraph.split("\n")
-        first_line = lines[0].strip()
+        first_line = html.escape(lines[0].strip())
+        bold_title = f"<b>{first_line}</b>"
 
-        if not first_line.startswith("**"):
-            first_line = f"**{first_line.strip('* ')}**"
+        rest = "\n".join(html.escape(line) for line in lines[1:])
 
-        rest = "\n".join(lines[1:])
         if rest:
-            formatted_paragraphs.append(f"{first_line}\n{rest}")
+            formatted_paragraphs.append(f"{bold_title}\n{rest}")
         else:
-            formatted_paragraphs.append(first_line)
+            formatted_paragraphs.append(bold_title)
 
     return "\n\n".join(formatted_paragraphs)
 
@@ -179,10 +172,8 @@ async def generate_digest(news_items):
         "Составь дайджест новостей игрового и IT-миров обязательно на русском языке. "
         "Для каждой новости отдельный абзац. Перед каждой новостью делай пустую строку. "
         "Не используй нумерацию. Без субъективных оценок. "
-        "Для каждой новости внутри дайджеста придумай название. "
-        "Печатай это название в начале абзаца. "
-        "Не делай ссылки на исходные материалы. Сразу удаляй такие ссылки из дайджеста. "
-        "Каждый дайджест завершай словами \"Всегда свежие новости из мира компьютерных игр на канале https://t.me/wewaprochanel\" в конце поста. "
+        "Для каждой новости внутри дайджеста придумай название в первой строке абзаца. "
+        "Не делай ссылки на исходные материалы. "
         "Каждый абзац о новости должен содержать не менее 250 символов.\n\n"
         f"{formatted}"
     )
@@ -196,44 +187,14 @@ async def generate_digest(news_items):
     return enforce_bold_titles(raw_text)
 
 # =========================
-# Генерация промта изображения
-# =========================
-
-async def get_image_prompt(digest_text: str) -> str:
-
-    sys_prompt = (
-        "You create prompts for image generation AIs in English. "
-        "Based on the news below, describe a short illustration idea (1-2 sentences). "
-        "Do not use names of real characters. No brands, logos, text elements."
-    )
-
-    messages = [
-        {"role": "system", "content": sys_prompt},
-        {"role": "user", "content": digest_text[:600]}
-    ]
-
-    base_prompt = await ask_gpt(messages)
-
-    final_prompt = (
-        "The pixel art character with short brown hair, black square glasses, "
-        "white T-shirt with a spiral symbol, red-orange suspenders, blue jeans, "
-        "brown belt and shoes is in the scene. "
-        f"{base_prompt} The character actively interacts with the environment."
-    )
-
-    return final_prompt.strip()
-
-# =========================
 # Генерация изображения
 # =========================
 
 async def generate_image(digest_text):
 
-    img_prompt = await get_image_prompt(digest_text)
-
     response = await openai_client.images.generate(
         model="gpt-image-1",
-        prompt=img_prompt,
+        prompt="Pixel art illustration inspired by tech and gaming news",
         size="1024x1024",
     )
 
@@ -253,11 +214,8 @@ async def fetch_html(session, url):
 # =========================
 
 async def main():
-    logger.info("=== BOT STARTED ===")
-    logger.info("Entering main loop")
 
     while True:
-        logger.info("New cycle started")
         try:
             collected = []
 
@@ -265,16 +223,13 @@ async def main():
 
                 for source in SOURCES:
                     try:
-                        html = await fetch_html(session, source.url)
-                        soup = BeautifulSoup(html, "html.parser")
+                        html_data = await fetch_html(session, source.url)
+                        soup = BeautifulSoup(html_data, "html.parser")
                         articles = source.parser(soup)
 
                         for title, link in articles:
                             if link not in sent_links:
                                 collected.append((source.name, title, link))
-
-                        if not collected:
-                            logger.info("No new articles found this cycle")
 
                     except Exception as e:
                         logger.error(f"{source.name} error: {e}")
