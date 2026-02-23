@@ -113,13 +113,8 @@ def decorate_titles(text: str) -> str:
         lines = paragraph.split("\n")
         first_line = lines[0].strip()
 
-        # Очищаем от лидирующих символов
-        clean_title = first_line.lstrip("-[]0123456789. ").strip()
-
-        if len(clean_title) <= 50:
-            decorated_title = f"✨🎮 {clean_title} 🎮✨"
-        else:
-            decorated_title = first_line
+        # Заголовок только со звёздочками
+        decorated_title = f"****{first_line}****"
 
         rest = "\n".join(lines[1:]).strip()
         if rest:
@@ -298,6 +293,7 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
 
 
 
