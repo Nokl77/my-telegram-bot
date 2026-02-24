@@ -114,7 +114,7 @@ def decorate_titles(text: str) -> str:
         first_line = lines[0].strip()
 
         # Заголовок только со звёздочками
-        decorated_title = f"****{first_line}****"
+        decorated_title = f"**{first_line}**"
 
         rest = "\n".join(lines[1:]).strip()
         if rest:
@@ -293,6 +293,7 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
 
 
 
