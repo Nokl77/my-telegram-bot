@@ -190,7 +190,18 @@ async def generate_digest(news_items):
     ]
 
     raw_text = await ask_gpt(messages)
-    return decorate_titles(raw_text)
+
+    # Постоянные надписи
+    START_TEXT = "🔥 НОВОСТИ ДНЯ 🔥"
+    END_TEXT = "Всегда свежие новости из мира компьютерных игр на канале https://t.me/wewaprochanel"
+    
+    # Сначала оформляем заголовки
+    formatted = decorate_titles(raw_text)
+    
+    # Потом добавляем начало и конец
+    final_text = f"{START_TEXT}\n\n{formatted}\n\n{END_TEXT}"
+
+    return final_text
 
 # =========================
 # Генерация промта изображения
@@ -293,6 +304,7 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
 
 
 
