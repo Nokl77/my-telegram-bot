@@ -1,3 +1,4 @@
+
 import asyncio
 import logging
 import os
@@ -102,6 +103,13 @@ async def ask_gpt(messages, temperature=0.6):
     return response.choices[0].message.content.strip()
 
 # =========================
+# Удаление нежелательных символов
+# =========================
+
+def remove_asterisks(text: str) -> str:
+    return text.replace("*", "")
+
+# =========================
 # Декоративное выделение только заголовков
 # =========================
 
@@ -183,7 +191,8 @@ async def generate_digest(news_items):
         "Не используй нумерацию. Без субъективных оценок. "
         "Не делай ссылки на исходные материалы. "
         "Для каждой новости внутри дайджеста придумай название в первой строке абзаца не более 50 символов. "
-        "Каждый текст о новости должен содержать не менее 250 символов (не путай этот текст с названием)"
+        "Не используй символы *, _, ~ и любые другие для выделения текста. Заголовок просто текст. "
+        "Каждый текст о новости должен содержать не менее 750 символов (не путай этот текст с названием) "
         "Весь дайджест делай на русском языке.\n\n"
         f"{formatted}"
     )
@@ -195,13 +204,16 @@ async def generate_digest(news_items):
 
     raw_text = await ask_gpt(messages)
 
+    # Убираем возможные звёздочки, на всякий случай
+    raw_text = remove_asterisks(raw_text)
+
     # Постоянные надписи
     START_TEXT = "🔥 НОВОСТЬ ДНЯ 🔥"
     END_TEXT = "Всегда свежие новости из мира компьютерных игр на канале https://t.me/wewaprochanel"
-    
+
     # Сначала оформляем заголовки
     formatted = decorate_titles(raw_text)
-    
+
     # Потом добавляем начало и конец
     final_text = f"{START_TEXT}\n\n{formatted}\n\n{END_TEXT}"
 
@@ -249,78 +261,4 @@ async def generate_image(digest_text):
         size="1024x1024",
     )
 
-    image_base64 = response.data[0].b64_json
-    return base64.b64decode(image_base64)
-
-# =========================
-# Парсинг
-# =========================
-
-async def fetch_html(session, url):
-    async with session.get(url, headers={"User-Agent": "Mozilla/5.0"}) as r:
-        return await r.text()
-
-# =========================
-# Главный цикл
-# =========================
-
-async def main():
-    logger.info("=== BOT STARTED ===")
-    logger.info("Entering main loop")
-
-    while True:
-        logger.info("New cycle started")
-        try:
-            collected = []
-
-            async with aiohttp.ClientSession() as session:
-
-                import random
-                # Перемешиваем список SOURCES для случайного порядка
-                random.shuffle(SOURCES)
-
-                for source in SOURCES:
-                    try:
-                        html = await fetch_html(session, source.url)
-                        soup = BeautifulSoup(html, "html.parser")
-                        articles = source.parser(soup)
-
-                        for title, link in articles:
-                            if link not in sent_links:
-                                collected.append((source.name, title, link))
-
-                    except Exception as e:
-                        logger.error(f"{source.name} error: {e}")
-
-                if collected:
-                    selected = collected[:TOTAL_PER_CYCLE]
-                    selected = await filter_semantic_duplicates(selected)
-
-                    if selected:
-                        digest = await generate_digest(selected)
-                        image = await generate_image(digest)
-
-                        await send_photo_with_caption(session, image, digest)
-
-                        for _, _, link in selected:
-                            sent_links.add(link)
-
-        except Exception as e:
-            logger.error(f"Main loop error: {e}")
-
-        await asyncio.sleep(CHECK_INTERVAL)
-
-if __name__ == "__main__":
-    asyncio.run(main())
-
-
-
-
-
-
-
-
-
-
-
-
+    image_base64 = response.data[0].b64
