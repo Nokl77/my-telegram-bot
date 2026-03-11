@@ -289,8 +289,8 @@ async def main():
                             if link not in sent_links:
                                 collected.append((source.name, title, link))
 
-                        except Exception as e:
-                            logger.error(f"{source.name} error: {e}")
+                    except Exception as e:
+                        logger.error(f"{source.name} error: {e}")
 
                 if collected:
                     selected = collected[:TOTAL_PER_CYCLE]
@@ -312,6 +312,7 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
 
 
 
