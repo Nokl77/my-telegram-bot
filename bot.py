@@ -196,7 +196,7 @@ async def generate_digest(news_items):
     raw_text = await ask_gpt(messages)
 
     # Постоянные надписи
-    START_TEXT = "🔥 НОВОСТИ ДНЯ 🔥"
+    START_TEXT = "🔥 НОВОСТЬ ДНЯ 🔥"
     END_TEXT = "Всегда свежие новости из мира компьютерных игр на канале https://t.me/wewaprochanel"
     
     # Сначала оформляем заголовки
@@ -280,16 +280,17 @@ async def main():
                 random.shuffle(SOURCES)
 
                 for source in SOURCES:
-                    html = await fetch_html(session, source.url)
-                    soup = BeautifulSoup(html, "html.parser")
-                    articles = source.parser(soup)
+                    try:
+                        html = await fetch_html(session, source.url)
+                        soup = BeautifulSoup(html, "html.parser")
+                        articles = source.parser(soup)
 
-                    for title, link in articles:
-                        if link not in sent_links:
-                            collected.append((source.name, title, link))
+                        for title, link in articles:
+                            if link not in sent_links:
+                                collected.append((source.name, title, link))
 
-                    except Exception as e:
-                        logger.error(f"{source.name} error: {e}")
+                        except Exception as e:
+                            logger.error(f"{source.name} error: {e}")
 
                 if collected:
                     selected = collected[:TOTAL_PER_CYCLE]
@@ -311,6 +312,7 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
 
 
 
